@@ -77,7 +77,7 @@ class CudaGraphPiecewiseBackend:
         ids_remove_padding: paddle.Tensor = kwargs["ids_remove_padding"]
         real_shape = ids_remove_padding.shape[0]
         padding_real_shape = self.real_shape_to_captured_size[real_shape]
-        logger.debug(
+        logger.info(
             f"[CUDA GRAPH] The actual real shape obtained by CUDAGraph is :{real_shape}, "
             f"The padded shape is :{padding_real_shape}"
         )
@@ -86,7 +86,7 @@ class CudaGraphPiecewiseBackend:
         assert entry is not None, f"real shape:{padding_real_shape} is not in cuda graph capture list."
         if entry.runnable is None:
             entry.runnable = self.runnable
-            logger.debug(f"[CUDA GRAPH] New entry lazy initialize with real shape {padding_real_shape}")
+            logger.info(f"[CUDA GRAPH] New entry lazy initialize with real shape {padding_real_shape}")
 
         if not entry.use_cudagraph:
             return entry.runnable(**kwargs)
@@ -97,7 +97,7 @@ class CudaGraphPiecewiseBackend:
             for n in range(entry.num_finished_warmup, self.warm_up_size):
                 entry.num_finished_warmup += 1
                 entry.runnable(**kwargs)
-                logger.debug(
+                logger.info(
                     f"[CUDA GRAPH] Warm up for real shape {padding_real_shape}, "
                     f"finished ({n + 1}/{entry.num_finished_warmup}) times"
                 )
@@ -122,9 +122,19 @@ class CudaGraphPiecewiseBackend:
             output._clear
 
             paddle.device.synchronize()
-            logger.debug(f"[CUDA GRAPH] CUDAGraph captured for real shape {padding_real_shape}")
+            self.save_cudagrpah_dot_files(entry)
+            logger.info(f"[CUDA GRAPH] CUDAGraph captured for real shape {padding_real_shape}")
 
         # Replay
         entry.cuda_graph.replay()
-        logger.debug(f"[CUDA GRAPH] CUDAGraph replayed for real shape {padding_real_shape}")
+        logger.info(f"[CUDA GRAPH] CUDAGraph replayed for real shape {padding_real_shape}")
         return entry.output_buffer
+
+    def save_cudagrpah_dot_files(self, entry):
+        """Print CUDAGrpah to dot files"""
+        if entry.cuda_graph:
+            print("save graph")
+            entry.cuda_graph.print_to_dot_files(
+                f"/root/paddlejob/workspace/env_run/output/gongshaotian/FastDeploy/GraphDotFiles/backend{id(self)}_shape{entry.runtime_bs}",
+                1 << 0,
+            )  # backend{id(self)}_shape{entry.runtime_bs}

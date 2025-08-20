@@ -1051,6 +1051,7 @@ class GPUModelRunner(ModelRunnerBase):
             self.padding_cudagraph_inputs()
 
             # 3. Run model
+            print(f"[Dummy] step use cuda graph:{self.forward_meta.step_use_cudagraph}")
             if self.enable_mm:
                 model_output = self.model(
                     self.share_inputs["ids_remove_padding"],
@@ -1315,6 +1316,7 @@ class GPUModelRunner(ModelRunnerBase):
 
         # 2. Padding inputs for cuda graph
         self.padding_cudagraph_inputs()
+        print(f"[Debug] step use cuda graph:{self.forward_meta.step_use_cudagraph}")
 
         # 3. Execute model
         if self.enable_mm:
@@ -1329,6 +1331,7 @@ class GPUModelRunner(ModelRunnerBase):
                 ids_remove_padding=self.share_inputs["ids_remove_padding"],
                 forward_meta=self.forward_meta,
             )
+            paddle.device.synchronize()
             hidden_states = rebuild_padding(
                 model_output,
                 self.share_inputs["cu_seqlens_q"],
@@ -1427,6 +1430,7 @@ class GPUModelRunner(ModelRunnerBase):
                 self.proposer.run(full_hidden_states=model_output)
             else:
                 self.proposer.run(share_inputs=self.share_inputs)
+                print("proposer run")
 
         # 7. Updata 'infer_seed' and step_cuda()
         self.share_inputs["infer_seed"].add_(self.infer_seed_increment)

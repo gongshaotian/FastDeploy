@@ -539,6 +539,7 @@ class GraphOptimizationConfig:
         draft_capture_sizes += [32 * i for i in range(17, 33)]
 
         draft_capture_sizes.append(max_num_seqs)
+        draft_capture_sizes.append(max_num_seqs * 2)  # for spec decode
         self.cudagraph_capture_sizes = sorted(draft_capture_sizes)
 
     def to_json_string(self):
@@ -950,7 +951,7 @@ class FDConfig:
         # Initialize cuda graph capture list
         if self.graph_opt_config.cudagraph_capture_sizes is None:
             self.graph_opt_config._set_cudagraph_sizes(max_num_seqs=self.parallel_config.max_num_seqs)
-        self.graph_opt_config.init_with_cudagrpah_size(max_num_seqs=self.parallel_config.max_num_seqs)
+        self.graph_opt_config.init_with_cudagrpah_size(max_num_seqs=(self.parallel_config.max_num_seqs * 2))
 
         # TODO(wangmingkai02): change graph_opt_level=2 when using static mode with cinn
         if self.graph_opt_config.graph_opt_level == 2:
