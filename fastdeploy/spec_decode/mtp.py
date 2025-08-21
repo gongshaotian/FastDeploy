@@ -417,7 +417,7 @@ class MTPProposer(Proposer):
                     request.get("block_tables"), dtype="int32"
                 )
         self.model_inputs["not_need_stop"][0] = True
-        self.model_inputs["seq_lens_this_time"] = self.seq_lens_this_time_buffer[:num_running_requests]
+        self.model_inputs["seq_lens_this_time"] = self.seq_lens_this_time_buffer#[:num_running_requests]
 
     def _initialize_forward_meta(self):
         """
@@ -555,6 +555,9 @@ class MTPProposer(Proposer):
                 self.model_inputs["output_padding_offset"] = output_padding_offset
                 self._initialize_forward_meta()
 
+                # Padding inputs for cuda graph
+                self.padding_cudagraph_inputs()
+
                 # Get sampling metadata
                 self.sampling_metadata = SamplingMetadata(
                     temperature=self.model_inputs["temperature"],
@@ -685,3 +688,15 @@ class MTPProposer(Proposer):
     def is_chunk_prefill_enabled(self):
         """"""
         return True
+
+    def padding_cudagraph_inputs(self) -> None:
+        """
+        Clean buffers used for the CUDA graph when replaying the CUDA graph with the padded batch.
+        In FastDeploy, almost all input tensors have a buffer. So, just keep the buffer clean when replaying the CUDA graph with the padded batch.
+        """
+        # In init_attention_metadata, the decode buffer has already been cleared
+
+        # To adapt to CUDA Graph, keep the forward pass at the maximum batch size.
+        if self.use_cudagraph:
+            self.forward_meta.seq_lens_this_time = self.seq_lens_this_time_buffer
+        return

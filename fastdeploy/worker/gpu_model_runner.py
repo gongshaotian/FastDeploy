@@ -1069,6 +1069,7 @@ class GPUModelRunner(ModelRunnerBase):
                     ids_remove_padding=self.share_inputs["ids_remove_padding"],
                     forward_meta=self.forward_meta,
                 )
+                paddle.device.synchronize()
 
                 hidden_states = rebuild_padding(
                     model_output,
@@ -1332,11 +1333,19 @@ class GPUModelRunner(ModelRunnerBase):
             )
             hidden_states = model_output
         else:
-            model_output = self.model(
-                ids_remove_padding=self.share_inputs["ids_remove_padding"],
+            padding_output = self.model(
+                ids_remove_padding=self.share_inputs["ids_remove_padding"], # 6 -> 8 graph -> 8 * voc -> 6 * voc
                 forward_meta=self.forward_meta,
             )
+            print(f"before slice model output shape:{model_output}")
+            print(f"seq_lens_this_time{self.share_inputs['seq_lens_this_time']}")
+            if self.use_cudagraph:
+                model_output = padding_output[:self.real_token_num]
+                print(model_output.data_ptr(), padding_output.data_ptr())
             paddle.device.synchronize()
+            output_padding_offset_shape = self.share_inputs["output_padding_offset"].shape
+            print(f"output_padding_offset shape:{output_padding_offset_shape}")
+            print(f"seq_lens_decoder:{self.share_inputs['seq_lens_this_time'].shape}")
             hidden_states = rebuild_padding(
                 model_output,
                 self.share_inputs["cum_offsets"],
@@ -1346,10 +1355,11 @@ class GPUModelRunner(ModelRunnerBase):
                 (self.share_inputs["output_padding_offset"] if self.speculative_decoding else None),
                 self.parallel_config.max_model_len,
             )
+            paddle.device.synchronize()
 
         # 4. Compute logits, Sample
         logits = self.model.compute_logits(hidden_states)
-
+        paddle.device.synchronize()
         if not self.speculative_decoding:
             set_value_by_flags_and_idx(
                 self.share_inputs["pre_ids"],
@@ -1375,12 +1385,15 @@ class GPUModelRunner(ModelRunnerBase):
                 self.parallel_config.max_model_len,
                 self.share_inputs,
             )
+            paddle.device.synchronize()
             sampler_output = None
             if self.parallel_config.tensor_parallel_size > 1:
-                paddle.distributed.broadcast(self.share_inputs["accept_tokens"], 0)
-                paddle.distributed.broadcast(self.share_inputs["accept_num"], 0)
-                paddle.distributed.broadcast(self.share_inputs["step_idx"], 0)
-                paddle.distributed.broadcast(self.share_inputs["stop_flags"], 0)
+                # print(self.share_inputs["accept_tokens"])
+                # print(self.share_inputs["accept_tokens"].data_ptr())
+                paddle.distributed.broadcast(self.share_inputs["accept_tokens"], 1)
+                paddle.distributed.broadcast(self.share_inputs["accept_num"], 1)
+                paddle.distributed.broadcast(self.share_inputs["step_idx"], 1)
+                paddle.distributed.broadcast(self.share_inputs["stop_flags"], 1)
 
         # 5. Post Process
         model_output_data = ModelOutputData(
@@ -1435,7 +1448,7 @@ class GPUModelRunner(ModelRunnerBase):
                 self.proposer.run(full_hidden_states=model_output)
             else:
                 self.proposer.run(share_inputs=self.share_inputs)
-                print("proposer run")
+                # print("proposer run")
 
         # 7. Updata 'infer_seed' and step_cuda()
         self.share_inputs["infer_seed"].add_(self.infer_seed_increment)
@@ -1606,6 +1619,7 @@ class GPUModelRunner(ModelRunnerBase):
         # To adapt to CUDA Graph, keep the forward pass at the maximum batch size.
         if self.use_cudagraph:
             self.forward_meta.seq_lens_this_time = self.seq_lens_this_time_buffer
+            self.real_token_num = self.forward_meta.ids_remove_padding.shape[0]
         return
 
     def _init_image_preprocess(self) -> None:
