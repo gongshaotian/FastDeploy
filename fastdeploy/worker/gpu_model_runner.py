@@ -1333,15 +1333,16 @@ class GPUModelRunner(ModelRunnerBase):
             )
             hidden_states = model_output
         else:
-            padding_output = self.model(
+            model_output = self.model(
                 ids_remove_padding=self.share_inputs["ids_remove_padding"], # 6 -> 8 graph -> 8 * voc -> 6 * voc
                 forward_meta=self.forward_meta,
             )
             print(f"before slice model output shape:{model_output}")
             print(f"seq_lens_this_time{self.share_inputs['seq_lens_this_time']}")
             if self.use_cudagraph:
-                model_output = padding_output[:self.real_token_num]
-                print(model_output.data_ptr(), padding_output.data_ptr())
+                print(model_output.data_ptr())
+                model_output = model_output[:self.real_token_num]
+                print(model_output.data_ptr())
             paddle.device.synchronize()
             output_padding_offset_shape = self.share_inputs["output_padding_offset"].shape
             print(f"output_padding_offset shape:{output_padding_offset_shape}")
