@@ -20,6 +20,7 @@ from typing import List
 import numpy as np
 import paddle
 
+from fastdeploy.config import FDConfig
 from fastdeploy.engine.request import Request
 from fastdeploy.model_executor.forward_meta import ForwardMeta
 from fastdeploy.model_executor.layers.attention import get_attention_backend
@@ -29,6 +30,8 @@ from fastdeploy.model_executor.layers.attention.base_attention_backend import (
 from fastdeploy.model_executor.layers.rotary_embedding import get_rope
 from fastdeploy.model_executor.layers.sample.meta_data import SamplingMetadata
 from fastdeploy.model_executor.layers.sample.sampler import MTPSampler
+from fastdeploy.model_executor.model_loader import get_model_loader
+from fastdeploy.model_executor.models import ModelForCasualLM
 from fastdeploy.model_executor.ops.gpu import (
     draft_model_postprocess,
     draft_model_preprocess,
@@ -50,26 +53,42 @@ class MTPProposer(Proposer):
     Proposer for Multi-Token-Prediction(MTP)
     """
 
-    def __init__(self, cfg, main_model, local_rank, device_id, main_model_inputs):
-        super().__init__(cfg)
+    def __init__(
+        self,
+        fd_config: FDConfig,
+        main_model: ModelForCasualLM,
+        local_rank: int,
+        device_id: int,  # physical device id
+        main_model_inputs,  # main model share inputs
+    ):
+        super().__init__(fd_config)
         self.num_main_model_layers = self.model_config.num_hidden_layers
         self.local_rank = local_rank
         self.device_id = device_id
-        self._update_cfg(main_model)
+        self._update_mtp_config(main_model)
         self._load_model()
         self.main_model_inputs = main_model_inputs
         self.mtp_strategy = self.speculative_config.mtp_strategy
         self.hybrid_mode = self.mtp_strategy == "with_ngram" and self.max_draft_token_num > self.num_model_steps
 
-        # [mixed, prefill, decoder]
-        self.role = "mixed"
-        self.sampler = MTPSampler(cfg)
+        # # [mixed, prefill, decoder]
+        # self.role = "mixed"
+
+        self.sampler = MTPSampler(fd_config)
         self._init_model_inputs()
+
+        # CUDA Graph
+        self.use_cudagraph = self.graph_opt_config.use_cudagraph
+        self.cudagraph_capture_sizes = list(reversed(self.graph_opt_config.cudagraph_capture_sizes))
+        self.sot_warmup_sizes = self.graph_opt_config.sot_warmup_sizes
 
         self.attn_backends: list[AttentionBackend] = []
         self._initialize_attn_backend()
 
-    def _update_cfg(self, main_model):
+        # Forward meta store the global meta information of the forward
+        self.forward_meta: ForwardMeta = None
+
+    def _update_mtp_config(self, main_model):
         """
         Update config for MTP from global config
         """
@@ -87,16 +106,13 @@ class MTPProposer(Proposer):
         """
         Load MTP Layer
         """
-        from fastdeploy.model_executor.model_loader import get_model_loader
-
-        model_loader = get_model_loader(load_config=self.cfg.load_config)
-        self.model = model_loader.load_model(fd_config=self.cfg)
+        model_loader = get_model_loader(load_config=self.fd_config.load_config)
+        self.model = model_loader.load_model(fd_config=self.fd_config)
 
     def dummy_prefill_inputs(self, num_tokens: int, batch_size: int, expected_decode_len: int):
         """Set dummy prefill inputs to model_inputs"""
         max_dec_len = expected_decode_len + 1
-        self.num_gpu_blocks = self.parallel_config.total_block_num
-        self.initialize_kv_cache()
+
         full_length = min(
             num_tokens // batch_size,
             self.parallel_config.max_model_len - max_dec_len,
@@ -123,15 +139,15 @@ class MTPProposer(Proposer):
             )
         self.model_inputs["seq_lens_this_time"] = self.seq_lens_this_time_buffer
 
-    def initialize_kv_cache(self):
+    def initialize_kv_cache(self, main_model_num_blocks, profile: bool = False):
         """
         Initialize kv cache
         """
-        # prompt cache
+        self.num_gpu_blocks = int(main_model_num_blocks * self.speculative_config.num_gpu_block_expand_ratio)
         self.cache_kvs = {}
 
+        # Get kv cache dtype
         cache_type = self.parallel_config.dtype
-
         kv_cache_quant_type = None
         if (
             self.quant_config
@@ -145,9 +161,7 @@ class MTPProposer(Proposer):
         kv_cache_shape = self.attn_backends[0].get_kv_cache_shape(
             max_num_blocks=self.num_gpu_blocks, kv_cache_quant_type=kv_cache_quant_type
         )
-        if not self.parallel_config.do_profile and (
-            self.cache_config.enable_prefix_caching or self.parallel_config.splitwise_role != "mixed"
-        ):
+        if not profile and (self.cache_config.enable_prefix_caching or self.parallel_config.splitwise_role != "mixed"):
             cache_kvs_list = []
             for i in range(
                 self.num_main_model_layers,
@@ -211,7 +225,7 @@ class MTPProposer(Proposer):
         # Get the attention backend
         attn_cls = get_attention_backend()
         attn_backend = attn_cls(
-            self.cfg,
+            self.fd_config,
             kv_num_heads=self.model_config.kv_num_heads,
             num_heads=num_heads,
             head_dim=head_dim,
@@ -224,7 +238,7 @@ class MTPProposer(Proposer):
             )
         self.attn_backends.append(attn_backend)
 
-    def clear_dummy_input(self):
+    def clear_mtp_cache(self):
         """
         Clear allocated cacheKV
         """
@@ -232,15 +246,13 @@ class MTPProposer(Proposer):
         if self.forward_meta is not None:
             del self.forward_meta.caches
 
-    def update_block_num(self, num_gpu_blocks) -> None:
+    def update_mtp_block_num(self, num_gpu_blocks) -> None:
         """
-        Update block num by theoretical calculation
+        Update MTP block num by theoretical calculation
         """
-
+        # Reset block table and kv cache with global block num
         self.main_model_num_gpu_blocks = num_gpu_blocks
-        self.num_gpu_blocks = int(num_gpu_blocks * self.speculative_config.num_gpu_block_expand_ratio)
-        if not (self.cache_config.enable_prefix_caching or self.parallel_config.splitwise_role != "mixed"):
-            self.initialize_kv_cache()
+        self.initialize_kv_cache(main_model_num_blocks=self.main_model_num_gpu_blocks)
 
         # Reset free list
         free_list = list(
@@ -257,7 +269,9 @@ class MTPProposer(Proposer):
                 "free_list_len": paddle.full([1], self.free_list_len, dtype="int32"),
             }
         )
-        self.parallel_config.do_profile = False
+
+        # delete this
+        # self.parallel_config.do_profile = False
 
     def _init_model_inputs(self):
         """
@@ -350,10 +364,6 @@ class MTPProposer(Proposer):
         """
         Process inputs for prefill tasks and insert it to model_inputs buffer
         """
-        # NOTE: Lazy initialize kv cache
-        if "caches" not in self.model_inputs:
-            self.initialize_kv_cache()
-
         # TODO:Init role in initialize process
         if req_dicts[-1].disaggregate_info is not None:
             if req_dicts[-1].disaggregate_info["role"] == "prefill":
@@ -447,6 +457,8 @@ class MTPProposer(Proposer):
             block_tables=self.model_inputs["block_tables"],
             caches=self.model_inputs["caches"],
         )
+
+        #
 
         # Initialzie attention meta data
         for attn_backend in self.attn_backends:
@@ -557,9 +569,12 @@ class MTPProposer(Proposer):
                 self.model_inputs["batch_id_per_token"].copy_(batch_id_per_token, False)
                 self.model_inputs["cu_seqlens_q"].copy_(cu_seqlens_q, False)
                 self.model_inputs["cu_seqlens_k"].copy_(cu_seqlens_k, False)
-                # for speculative decoding
+
+                # For speculative decoding
                 self.model_inputs["output_cum_offsets"] = output_cum_offsets
                 self.model_inputs["output_padding_offset"] = output_padding_offset
+
+                # Initialize forward meta data
                 self._initialize_forward_meta()
 
                 # Padding inputs for cuda graph
@@ -587,7 +602,7 @@ class MTPProposer(Proposer):
                     ids_remove_padding=self.model_inputs["ids_remove_padding"],
                     previous_hidden_states=target_hidden_states,
                     forward_meta=self.forward_meta,
-                )
+                )  # 6 -> 8*voc -> 6*voc
 
                 hidden_states = rebuild_padding(
                     model_output,

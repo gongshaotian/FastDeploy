@@ -60,8 +60,6 @@ __global__ void RebuildAppendPaddingKernel(T *output_data,
     for (int64_t i = global_idx * VecSize; i < output_elem_nums;
          i += gridDim.x * blockDim.x * VecSize) {
         const int out_token_id = i / dim_embed;
-        if id > real_:
-        
         const int ori_token_id =
             out_token_id + output_padding_offset[out_token_id];
         const int bi = ori_token_id / max_input_length;
