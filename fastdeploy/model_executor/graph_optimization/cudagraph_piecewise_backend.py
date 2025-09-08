@@ -20,7 +20,6 @@ from typing import Callable, Dict, Optional
 
 import paddle.nn.layer
 from paddle.device.cuda import graphs
-from paddle.jit.dy2static.utils import CUDAGraphState
 
 from fastdeploy.config import FDConfig
 from fastdeploy.distributed.communication import capture_custom_allreduce
@@ -40,7 +39,7 @@ class ConcreteSizeEntry:
     # Has runtime-bs been captured before
     captured: bool = False
 
-    # Need to be captured callable object（dynamic graph or static grpah backend）
+    # Need to be captured callable object（dynamic graph or static graph backend）
     runnable: Callable = None  # type: ignore
     # Number of completed warmups
     num_finished_warmup: int = 0
@@ -52,11 +51,16 @@ class ConcreteSizeEntry:
 
 class Dy2StCudaGraphManager:
     def __init__(self):
+        # NOTE(gongshaotian): Use local import to avoid RLHF version problems
+        from paddle.jit.dy2static.utils import CUDAGraphState
+
         self.state = CUDAGraphState.DISABLE
         self.captured_batch_size = set()
         self.batch_size = -1
 
     def run_impl(self, original_run_impl, inputs, parameters, attrs):
+        from paddle.jit.dy2static.utils import CUDAGraphState
+
         run_state = self.state
         prog_attrs, cuda_graph_attrs = attrs
         if run_state == CUDAGraphState.REPLAY:
@@ -100,13 +104,15 @@ class CudaGraphPiecewiseBackend:
             self.cuda_graph_manager = Dy2StCudaGraphManager()
 
     def run_static_model(self, entry: ConcreteSizeEntry, **kwargs):
+        from paddle.jit.dy2static.utils import CUDAGraphState
+
         if not entry.captured:
             # Warmup the model
             for n in range(entry.num_finished_warmup, self.warm_up_size):
                 entry.num_finished_warmup += 1
                 entry.runnable(**kwargs)
                 logger.debug(
-                    f"[CUDA GRAPH] Warm up for batch size {entry.real_shape}, "
+                    f"[CUDA GRAPH][ID:{id(self)}] Warm up for batch size {entry.real_shape}, "
                     f"finished ({n + 1}/{entry.num_finished_warmup}) times"
                 )
 
@@ -133,7 +139,7 @@ class CudaGraphPiecewiseBackend:
         real_shape = ids_remove_padding.shape[0]
         padding_real_shape = self.real_shape_to_captured_size[real_shape]
         logger.info(
-            f"[CUDA GRAPH] The actual real shape obtained by CUDAGraph is :{real_shape}, "
+            f"[CUDA GRAPH][ID:{id(self)}] The actual real shape obtained by CUDAGraph is :{real_shape}, "
             f"The padded shape is :{padding_real_shape}"
         )
 
@@ -141,7 +147,7 @@ class CudaGraphPiecewiseBackend:
         assert entry is not None, f"real shape:{padding_real_shape} is not in cuda graph capture list."
         if entry.runnable is None:
             entry.runnable = self.runnable
-            logger.info(f"[CUDA GRAPH] New entry lazy initialize with real shape {padding_real_shape}")
+            logger.info(f"[CUDA GRAPH][ID:{id(self)}] New entry lazy initialize with real shape {padding_real_shape}")
 
         if not entry.use_cudagraph:
             return entry.runnable(**kwargs)
@@ -156,7 +162,7 @@ class CudaGraphPiecewiseBackend:
                 entry.num_finished_warmup += 1
                 entry.runnable(**kwargs)
                 logger.info(
-                    f"[CUDA GRAPH] Warm up for real shape {padding_real_shape}, "
+                    f"[CUDA GRAPH][ID:{id(self)}] Warm up for real shape {padding_real_shape}, "
                     f"finished ({n + 1}/{entry.num_finished_warmup}) times"
                 )
 
@@ -183,11 +189,11 @@ class CudaGraphPiecewiseBackend:
 
             # For CUDAGraph debug
             # self._save_cudagrpah_dot_files(entry)
-            logger.debug(f"[CUDA GRAPH] CUDAGraph captured for real shape {padding_real_shape}")
+            logger.debug(f"[CUDA GRAPH][ID:{id(self)}] CUDAGraph captured for real shape {padding_real_shape}")
 
         # Replay
         entry.cuda_graph.replay()
-        logger.info(f"[CUDA GRAPH] CUDAGraph replayed for real shape {padding_real_shape}")
+        logger.info(f"[CUDA GRAPH][ID:{id(self)}] CUDAGraph replayed for real shape {padding_real_shape}")
         return entry.output_buffer
 
     def _create_entry_dict(self):
@@ -199,7 +205,8 @@ class CudaGraphPiecewiseBackend:
             self.concrete_size_entries[shape] = ConcreteSizeEntry(real_shape=shape)
 
         logger.info(
-            f"[CUDA GRAPH] CUDAGraph capture list {self.cudagraph_capture_sizes}, " "Created all real shape entry."
+            f"[CUDA GRAPH][ID:{id(self)}] CUDAGraph capture list {self.cudagraph_capture_sizes}, "
+            "Created all real shape entry."
         )
 
     def clear_graph(self):
@@ -208,7 +215,7 @@ class CudaGraphPiecewiseBackend:
         for id, entry in self.concrete_size_entries.items():
             if entry.cuda_graph:
                 del entry.cuda_graph
-                logger.debug(f"[CUDA GRAPH] The CUDAGraph with shape {id} has been cleared.")
+                logger.debug(f"[CUDA GRAPH][ID:{id(self)}] The CUDAGraph with shape {id} has been cleared.")
 
         del self.concrete_size_entries
         paddle.device.cuda.empty_cache()
