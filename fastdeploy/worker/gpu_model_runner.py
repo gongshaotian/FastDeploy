@@ -1250,10 +1250,12 @@ class GPUModelRunner(ModelRunnerBase):
                 skip_save_output=True,
                 zmq_client=self.zmq_client,
             )
-
+            print(f"\nin gpu_model_runner.py,self.forward_meta:{self.forward_meta}")
             if self.speculative_decoding:
                 if self.speculative_method == "mtp":
+                    print(f"\nin gpu_model_runner.py,before proposer.run,self.proposer.use_cudagraph:{self.proposer.use_cudagraph},\nself.proposer.forward_meta:{self.proposer.forward_meta}")
                     self.proposer.run(full_hidden_states=model_output)
+                    print("in gpu_model_runner.py,after proposer.run")
                 else:
                     self.proposer.run(share_inputs=self.share_inputs)
 
@@ -1447,7 +1449,7 @@ class GPUModelRunner(ModelRunnerBase):
                 model_output = model_output[: self.real_token_num]
                 print(model_output.data_ptr())
             paddle.device.synchronize()
-            output_padding_offset_shape = self.share_inputs["output_padding_offset"].shape
+            output_padding_offset_shape = self.share_inputs["output_padding_offset"].shape if ("output_padding_offset" in self.share_inputs) else None
             print(f"output_padding_offset shape:{output_padding_offset_shape}")
             print(f"seq_lens_decoder:{self.share_inputs['seq_lens_this_time'].shape}")
             hidden_states = rebuild_padding(
