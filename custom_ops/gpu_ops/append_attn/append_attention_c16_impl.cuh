@@ -1006,7 +1006,7 @@ void MultiQueryAppendAttention(
         constexpr int blocky = (128 + blockx - 1) / blockx;
         // dim3 grids_merge(min(sm_count * 4, token_num),
         //                  num_heads);  // 128k is too large
-        printf("\nsm_count * 4: %d\t token_num:%d", sm_count * 4, token_num);
+        // printf("\nsm_count * 4: %d\t token_num:%d", sm_count * 4, token_num);
         dim3 grids_merge(sm_count * 4, num_heads);
         dim3 blocks_merge(blockx, blocky);
         merge_multi_chunks_v2_kernel<NV_TYPE,
@@ -1256,7 +1256,7 @@ void MultiQueryAppendAttention(
         constexpr int blocky = (128 + blockx - 1) / blockx;
         // dim3 grids_merge(min(sm_count * 4, token_num),
         //                   num_heads);
-        printf("\nsm_count * 4: %d\t token_num:%d", sm_count * 4, token_num);
+        // printf("\nsm_count * 4: %d\t token_num:%d", sm_count * 4, token_num);
         dim3 grids_merge(sm_count * 4, num_heads);
         dim3 blocks_merge(blockx, blocky);
         merge_multi_chunks_v2_kernel<NV_TYPE,

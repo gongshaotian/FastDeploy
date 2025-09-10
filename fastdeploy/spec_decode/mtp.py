@@ -533,11 +533,43 @@ class MTPProposer(Proposer):
         # Initialzie attention meta data
         for attn_backend in self.attn_backends:
             attn_backend.init_attention_metadata(self.forward_meta)
+        
+
+        # Update Batch type for cuda graph
+        only_decode_batch = True
+        prefill_exists = None
+
+        # Mix ep in single node
+        if self.fd_config.parallel_config.use_ep and self.fd_config.parallel_config.splitwise_role == "mixed":
+            only_decode_batch_list = []
+            prefill_exists = self.exist_prefill()
+            paddle.distributed.all_gather_object(only_decode_batch_list, not prefill_exists)
+            only_decode_batch = all(only_decode_batch_list)
+            self.fd_config.parallel_config.moe_phase.phase = "decode" if only_decode_batch else "prefill"
+
+        self.forward_meta.step_use_cudagraph = (
+            self.use_cudagraph
+            and only_decode_batch
+            and not (prefill_exists if prefill_exists is not None else self.exist_prefill())
+        )
+
+        # self.forward_meta.step_use_cudagraph = True
+
+    def exist_prefill(self):
+        """
+        check whether prefill stage exist
+        """
+        if int(paddle.max(self.model_inputs["seq_lens_encoder"])) != 0:
+            return 1
+        else:
+            return 0
 
     def _prepare_inputs(self, full_hidden_states):
         """
         Prepare MTP inputs
         """
+        # print("\nin mtp.py before draft_model_preprocess, not_need_stop of self.model_inputs:",self.model_inputs["not_need_stop"])
+        # print("\nin mtp.py before draft_model_preprocess, stop_flags:",self.model_inputs["stop_flags"],"batch_drop:",self.model_inputs["batch_drop"])
         use_v1_cache_scheduler = envs.ENABLE_V1_KVCACHE_SCHEDULER
         draft_model_preprocess(
             self.model_inputs["draft_tokens"],
@@ -565,6 +597,7 @@ class MTPProposer(Proposer):
             self.role == "prefill",
             use_v1_cache_scheduler,
         )
+        # print("\nin mtp.py after draft_model_preprocess, not_need_stop of self.model_inputs:",self.model_inputs["not_need_stop"])
 
         target_hidden_states = eagle_get_hidden_states(
             full_hidden_states,
@@ -615,6 +648,7 @@ class MTPProposer(Proposer):
         """
         Main process for MTP inference
         """
+        # print("\nin mtp.py begin of _propose, not_need_stop of self.model_inputs:",self.model_inputs["not_need_stop"])
         for substep in range(self.num_model_steps):
             if self.model_inputs["not_need_stop"]:
                 self.model_inputs["substep"] = substep
@@ -704,6 +738,7 @@ class MTPProposer(Proposer):
 
                 if substep != self.num_model_steps - 1:
                     target_hidden_states = self._get_self_hidden_states(hidden_states)
+        # print("\nin mtp.py end of _propose, not_need_stop of self.model_inputs:",self.model_inputs["not_need_stop"])
 
     def _get_self_hidden_states(self, hidden_states):
         target_hidden_states = eagle_get_self_hidden_states(

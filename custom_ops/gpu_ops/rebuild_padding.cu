@@ -117,7 +117,7 @@ std::vector<paddle::Tensor> rebuild_padding(
                            0,
                            D,
                            tmp_out.place());
-        printf("out buffer shape: token_num %d - need_delete_token_num %d, dim_embed %d", token_num, need_delete_token_num, dim_embed);
+        // printf("out buffer shape: token_num %d - need_delete_token_num %d, dim_embed %d", token_num, need_delete_token_num, dim_embed);
     } else {
         out =
             paddle::full({bsz, dim_embed}, 0, tmp_out.dtype(), tmp_out.place());

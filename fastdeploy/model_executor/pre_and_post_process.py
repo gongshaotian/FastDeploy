@@ -114,6 +114,7 @@ def pre_process(
     max_len = input_ids.shape[1]
     cum_offsets_now = paddle.cumsum(max_len - seq_lens_this_time, dtype="int32")
     token_num = paddle.sum(seq_lens_this_time)
+    print(f"\nin pre_and_post-process.py, token_num = {token_num}")
     output_padding_offset = None
     output_cum_offsets = None
     if speculative_decoding:

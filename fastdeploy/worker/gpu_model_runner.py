@@ -1110,6 +1110,7 @@ class GPUModelRunner(ModelRunnerBase):
             expected_decode_len: Expected number of tokens generated
             in_capturing: Is cuda graph in capturing state
         """
+        print("\n######### start dummy run #########\n")
         self._dummy_prefill_inputs(
             num_tokens=num_tokens,
             batch_size=batch_size,
@@ -1121,14 +1122,21 @@ class GPUModelRunner(ModelRunnerBase):
                 batch_size=batch_size,
                 expected_decode_len=expected_decode_len,
             )
+        times = 0
+        print(f"\nin gpu_model_runner.py, before circle self.forward_meta:{self.forward_meta}")
+        if self.speculative_decoding:
+            print(f"\nin gpu_model_runner.py, before circle self.proposer.forward_meta:{self.proposer.forward_meta}")
         while True:
-
+            print(f"\n######### start dummy run times{times}#########\n")
+            times = times+1
             # 1. Initialize forward meta and attention meta data
             self._prepare_inputs()
 
             # 2. Padding inputs for cuda graph
             self.forward_meta.step_use_cudagraph = in_capturing and self.forward_meta.step_use_cudagraph
             self.padding_cudagraph_inputs()
+
+            print(f"\nin gpu_model_runner.py, before forward self.forward_meta:{self.forward_meta}")
 
             # 3. Run model
             print(f"[Dummy] step use cuda graph:{self.forward_meta.step_use_cudagraph}")
@@ -1250,12 +1258,12 @@ class GPUModelRunner(ModelRunnerBase):
                 skip_save_output=True,
                 zmq_client=self.zmq_client,
             )
-            print(f"\nin gpu_model_runner.py,self.forward_meta:{self.forward_meta}")
+            print(f"\nin gpu_model_runner.py, after post_process self.forward_meta:{self.forward_meta}")
             if self.speculative_decoding:
                 if self.speculative_method == "mtp":
                     print(f"\nin gpu_model_runner.py,before proposer.run,self.proposer.use_cudagraph:{self.proposer.use_cudagraph},\nself.proposer.forward_meta:{self.proposer.forward_meta}")
                     self.proposer.run(full_hidden_states=model_output)
-                    print("in gpu_model_runner.py,after proposer.run")
+                    print(f"\nin gpu_model_runner.py,after proposer.run, self.proposer.use_cudagraph:{self.proposer.use_cudagraph},\nself.proposer.forward_meta:{self.proposer.forward_meta}")
                 else:
                     self.proposer.run(share_inputs=self.share_inputs)
 
@@ -1272,6 +1280,7 @@ class GPUModelRunner(ModelRunnerBase):
 
             if int((self.share_inputs["seq_lens_this_time"] > 0).sum()) == 0:
                 break
+        print("\n######### End dummy run #########\n")
 
     def _update_chunked_prefill(self, tasks):
         """
@@ -1345,7 +1354,8 @@ class GPUModelRunner(ModelRunnerBase):
             logger.info("Skipping CUDA graph capture. Please check GraphOptimizationConfig")
             return
         time_before_capture = time.perf_counter()
-        expected_decode_len = 1
+        # NOTE(liujundong): expected_decode_len = 1, will affect mtp capture in cudagraph
+        expected_decode_len = 2
         capture_sizes = self.cudagraph_capture_sizes.copy()
         for batch_size in sorted(capture_sizes, reverse=True):
             self._dummy_run(
