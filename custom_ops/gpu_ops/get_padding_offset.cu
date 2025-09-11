@@ -134,7 +134,7 @@ std::vector<paddle::DataType> GetPaddingOffsetInferDtype(
 }
 
 PD_BUILD_STATIC_OP(get_padding_offset)
-    .Inputs({"input_ids", "token_num", "cum_offsets", "seq_len"})
+    .Inputs({"input_ids", "cum_offsets", "token_num", "seq_len"})
     .Outputs({"x_remove_padding",
               "cum_offsets_out",
               "batch_id_per_token",

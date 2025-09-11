@@ -223,9 +223,31 @@ class MTPProposer(Proposer):
         self.model_inputs["decoder_num_blocks_cpu"] = paddle.zeros_like(
             self.target_model_inputs["decoder_num_blocks_cpu"]
         ).pin_memory()
+        self.model_inputs["decoder_num_blocks_device"] = paddle.zeros_like(
+            self.target_model_inputs["decoder_num_blocks_device"]
+        )
+        self.model_inputs["decoder_chunk_size_device"] = paddle.zeros_like(
+            self.target_model_inputs["decoder_chunk_size_device"]
+        )
         self.model_inputs["max_len_tensor_cpu"] = paddle.zeros_like(
             self.target_model_inputs["max_len_tensor_cpu"]
         ).cpu()
+
+        self.model_inputs["encoder_batch_ids"] = paddle.zeros_like(self.target_model_inputs["encoder_batch_ids"])
+        self.model_inputs["encoder_tile_ids_per_batch"] = paddle.zeros_like(
+            self.target_model_inputs["encoder_tile_ids_per_batch"]
+        )
+        self.model_inputs["encoder_num_blocks_x_cpu"] = paddle.zeros_like(
+            self.target_model_inputs["encoder_num_blocks_x_cpu"]
+        ).cpu()
+        self.model_inputs["kv_batch_ids"] = paddle.zeros_like(self.target_model_inputs["kv_batch_ids"])
+        self.model_inputs["kv_tile_ids_per_batch"] = paddle.zeros_like(
+            self.target_model_inputs["kv_tile_ids_per_batch"]
+        )
+        self.model_inputs["kv_num_blocks_x_cpu"] = paddle.zeros_like(
+            self.target_model_inputs["kv_num_blocks_x_cpu"]
+        ).cpu()
+        self.model_inputs["max_len_kv_cpu"] = paddle.zeros_like(self.target_model_inputs["max_len_kv_cpu"]).cpu()
 
         # Get the attention backend
         attn_cls = get_attention_backend()
@@ -338,7 +360,16 @@ class MTPProposer(Proposer):
         self.model_inputs["decoder_batch_ids"] = None
         self.model_inputs["decoder_tile_ids_per_batch"] = None
         self.model_inputs["decoder_num_blocks_cpu"] = None  # Pinning Memory
+        self.model_inputs["decoder_num_blocks_device"] = None
+        self.model_inputs["decoder_chunk_size_device"] = None
         self.model_inputs["max_len_tensor_cpu"] = None  # CPU
+        self.model_inputs["encoder_batch_ids"] = None
+        self.model_inputs["encoder_tile_ids_per_batch"] = None
+        self.model_inputs["encoder_num_blocks_x_cpu"] = None  # CPU
+        self.model_inputs["kv_batch_ids"] = None
+        self.model_inputs["kv_tile_ids_per_batch"] = None
+        self.model_inputs["kv_num_blocks_x_cpu"] = None  # CPU
+        self.model_inputs["max_len_kv_cpu"] = None  # CPU
 
         # Input tokens
         self.model_inputs["draft_tokens"] = paddle.full(
@@ -517,6 +548,8 @@ class MTPProposer(Proposer):
             decoder_batch_ids=self.model_inputs["decoder_batch_ids"],
             decoder_tile_ids_per_batch=self.model_inputs["decoder_tile_ids_per_batch"],
             decoder_num_blocks_cpu=self.model_inputs["decoder_num_blocks_cpu"],
+            decoder_num_blocks_device=self.model_inputs["decoder_num_blocks_device"],
+            decoder_chunk_size_device=self.model_inputs["decoder_chunk_size_device"],
             max_len_tensor_cpu=self.model_inputs["max_len_tensor_cpu"],
             seq_lens_encoder=self.model_inputs["seq_lens_encoder"],
             seq_lens_decoder=self.model_inputs["seq_lens_decoder"],
@@ -526,6 +559,13 @@ class MTPProposer(Proposer):
             cu_seqlens_k=self.model_inputs["cu_seqlens_k"],
             block_tables=self.model_inputs["block_tables"],
             caches=self.model_inputs["caches"],
+            encoder_batch_ids=self.model_inputs["encoder_batch_ids"],
+            encoder_tile_ids_per_batch=self.model_inputs["encoder_tile_ids_per_batch"],
+            encoder_num_blocks_x_cpu=self.model_inputs["encoder_num_blocks_x_cpu"],
+            kv_batch_ids=self.model_inputs["kv_batch_ids"],
+            kv_tile_ids_per_batch=self.model_inputs["kv_tile_ids_per_batch"],
+            kv_num_blocks_x_cpu=self.model_inputs["kv_num_blocks_x_cpu"],
+            max_len_kv_cpu=self.model_inputs["max_len_kv_cpu"],
         )
 
         #
@@ -533,7 +573,6 @@ class MTPProposer(Proposer):
         # Initialzie attention meta data
         for attn_backend in self.attn_backends:
             attn_backend.init_attention_metadata(self.forward_meta)
-        
 
         # Update Batch type for cuda graph
         only_decode_batch = True
