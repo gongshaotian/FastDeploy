@@ -1105,7 +1105,6 @@ class GPUModelRunner(ModelRunnerBase):
             expected_decode_len: Expected number of tokens generated
             in_capturing: Is cuda graph in capturing state
         """
-        print("\n######### start dummy run #########\n")
         self._dummy_prefill_inputs(
             num_tokens=num_tokens,
             batch_size=batch_size,
@@ -1118,11 +1117,7 @@ class GPUModelRunner(ModelRunnerBase):
                 expected_decode_len=expected_decode_len,
             )
         times = 0
-        print(f"\nin gpu_model_runner.py, before circle self.forward_meta:{self.forward_meta}")
-        if self.speculative_decoding:
-            print(f"\nin gpu_model_runner.py, before circle self.proposer.forward_meta:{self.proposer.forward_meta}")
         while True:
-            print(f"\n######### start dummy run times{times}#########\n")
             times = times + 1
             # 1. Initialize forward meta and attention meta data
             self._prepare_inputs()
@@ -1130,8 +1125,6 @@ class GPUModelRunner(ModelRunnerBase):
             # 2. Padding inputs for cuda graph
             self.forward_meta.step_use_cudagraph = in_capturing and self.forward_meta.step_use_cudagraph
             self.padding_cudagraph_inputs()
-
-            print(f"\nin gpu_model_runner.py, before forward self.forward_meta:{self.forward_meta}")
 
             # 3. Run model
             if self.enable_mm:
@@ -1146,7 +1139,6 @@ class GPUModelRunner(ModelRunnerBase):
                     ids_remove_padding=self.share_inputs["ids_remove_padding"],
                     forward_meta=self.forward_meta,
                 )
-                paddle.device.synchronize()
 
                 hidden_states = rebuild_padding(
                     model_output,
@@ -1252,16 +1244,9 @@ class GPUModelRunner(ModelRunnerBase):
                 skip_save_output=True,
                 zmq_client=self.zmq_client,
             )
-            print(f"\nin gpu_model_runner.py, after post_process self.forward_meta:{self.forward_meta}")
             if self.speculative_decoding:
                 if self.speculative_method == "mtp":
-                    print(
-                        f"\nin gpu_model_runner.py,before proposer.run,self.proposer.use_cudagraph:{self.proposer.use_cudagraph},\nself.proposer.forward_meta:{self.proposer.forward_meta}"
-                    )
                     self.proposer.run(full_hidden_states=model_output)
-                    print(
-                        f"\nin gpu_model_runner.py,after proposer.run, self.proposer.use_cudagraph:{self.proposer.use_cudagraph},\nself.proposer.forward_meta:{self.proposer.forward_meta}"
-                    )
                 else:
                     self.proposer.run(share_inputs=self.share_inputs)
 
@@ -1278,7 +1263,6 @@ class GPUModelRunner(ModelRunnerBase):
 
             if int((self.share_inputs["seq_lens_this_time"] > 0).sum()) == 0:
                 break
-        print("\n######### End dummy run #########\n")
 
     def _update_chunked_prefill(self, tasks):
         """
@@ -1355,6 +1339,24 @@ class GPUModelRunner(ModelRunnerBase):
         # NOTE(liujundong): expected_decode_len = 1, will affect mtp capture in cudagraph
         expected_decode_len = 2
         capture_sizes = self.cudagraph_capture_sizes.copy()
+        if self.speculative_decoding and self.speculative_method == "mtp":
+            for batch_size in sorted(capture_sizes, reverse=True):
+                if batch_size == 1:
+                    logger.info("Skip token_num = 1, when capture target model for mtp")
+                else:
+                    assert batch_size % 2 == 0
+                    self._dummy_run(
+                        num_tokens=self.parallel_config.max_num_batched_tokens,
+                        batch_size=int(batch_size / 2),
+                        in_capturing=True,
+                        expected_decode_len=1,
+                    )
+                    logger.info(
+                        f"Warm up the model with the num_tokens:{batch_size}, expected_decode_len:{expected_decode_len}"
+                    )
+            time_after_capture = time.perf_counter()
+            logger.info(f"Cuda Graph capturing took {time_after_capture - time_before_capture} seconds")
+            return
         for batch_size in sorted(capture_sizes, reverse=True):
             self._dummy_run(
                 num_tokens=self.parallel_config.max_num_batched_tokens,
@@ -1446,11 +1448,12 @@ class GPUModelRunner(ModelRunnerBase):
             hidden_states = model_output
         else:
             model_output = self.model(
-                ids_remove_padding=self.share_inputs["ids_remove_padding"],  # 6 -> 8 graph -> 8 * voc -> 6 * voc
+                ids_remove_padding=self.share_inputs["ids_remove_padding"],
                 forward_meta=self.forward_meta,
             )
             if self.use_cudagraph:
                 model_output = model_output[: self.real_token_num]
+
             hidden_states = rebuild_padding(
                 model_output,
                 self.share_inputs["cu_seqlens_q"],
@@ -1460,11 +1463,9 @@ class GPUModelRunner(ModelRunnerBase):
                 (self.share_inputs["output_padding_offset"] if self.speculative_decoding else None),
                 self.parallel_config.max_model_len,
             )
-            paddle.device.synchronize()
 
         # 4. Compute logits, Sample
         logits = self.model.compute_logits(hidden_states)
-        paddle.device.synchronize()
         if not self.speculative_decoding:
             set_value_by_flags_and_idx(
                 self.share_inputs["pre_ids"],
@@ -1494,7 +1495,6 @@ class GPUModelRunner(ModelRunnerBase):
                 self.parallel_config.max_model_len,
                 self.share_inputs,
             )
-            paddle.device.synchronize()
             sampler_output = None
             if self.parallel_config.tensor_parallel_size > 1:
                 paddle.distributed.broadcast(
@@ -1658,7 +1658,7 @@ class GPUModelRunner(ModelRunnerBase):
         # 2. Dummy run
         self._dummy_run(
             num_tokens=self.parallel_config.max_num_batched_tokens,
-            batch_size=min(self.parallel_config.max_num_seqs, 3),
+            batch_size=self.parallel_config.max_num_seqs,
         )
 
         # 3. gc

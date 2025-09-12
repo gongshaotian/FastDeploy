@@ -27,13 +27,13 @@ from paddleformers.utils.log import logger
 
 from fastdeploy.config import FDConfig
 from fastdeploy.model_executor.forward_meta import ForwardMeta
+from fastdeploy.model_executor.graph_optimization.decorator import (
+    support_graph_optimization,
+)
 from fastdeploy.model_executor.layers.mtp_linear import ParallelEHProjection
 from fastdeploy.model_executor.layers.normalization import RMSNorm
 from fastdeploy.model_executor.models.ernie4_5_moe import Ernie4_5_DecoderLayer
 from fastdeploy.model_executor.models.model_base import ModelForCasualLM
-from fastdeploy.model_executor.graph_optimization.decorator import (
-    support_graph_optimization,
-)
 
 
 class Ernie4_5_MTPPretrainedModel(PretrainedModel):
@@ -230,6 +230,7 @@ class Ernie4_5_MTPPretrainedModel(PretrainedModel):
         )
 
         return mappings
+
 
 @support_graph_optimization
 class Ernie4_5_MTPModel(nn.Layer):
@@ -438,12 +439,10 @@ class Ernie4_5_MTPForCausalLM(ModelForCasualLM):
         """
         forward
         """
-        print("in ernie4_5_mtp.py , realshape is ",ids_remove_padding.shape)
         hidden_states = self.ernie(
             ids_remove_padding=ids_remove_padding,
             previous_hidden_states=previous_hidden_states,
-            forward_meta=forward_meta
+            forward_meta=forward_meta,
         )
-
 
         return hidden_states
