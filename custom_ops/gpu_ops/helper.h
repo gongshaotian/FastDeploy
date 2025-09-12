@@ -137,10 +137,6 @@ inline cudaError_t GetNumBlocks(int64_t n, int *num_blocks) {
   *num_blocks = std::max<int>(
       1, std::min<int64_t>((n + kBlockSize - 1) / kBlockSize,
                            sm_count * tpm / kBlockSize * kNumWaves));
-  // int64_t tmp_num1 = (n + kBlockSize - 1) / kBlockSize;       // dynamic
-  // int64_t tmp_num2 = sm_count * tpm / kBlockSize * kNumWaves; // static
-  // *num_blocks = std::max<int>(1,tmp_num2);
-  // printf("\nGetNumBlocks tmp_num1: %d \ttmp_num2: %d", tmp_num1, tmp_num2);
   return cudaSuccess;
 }
 
