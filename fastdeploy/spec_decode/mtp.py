@@ -567,8 +567,6 @@ class MTPProposer(Proposer):
         """
         Prepare MTP inputs
         """
-        # print("\nin mtp.py before draft_model_preprocess, not_need_stop of self.model_inputs:",self.model_inputs["not_need_stop"])
-        # print("\nin mtp.py before draft_model_preprocess, stop_flags:",self.model_inputs["stop_flags"],"batch_drop:",self.model_inputs["batch_drop"])
         use_v1_cache_scheduler = envs.ENABLE_V1_KVCACHE_SCHEDULER
         draft_model_preprocess(
             self.model_inputs["draft_tokens"],
@@ -596,7 +594,6 @@ class MTPProposer(Proposer):
             self.role == "prefill",
             use_v1_cache_scheduler,
         )
-        # print("\nin mtp.py after draft_model_preprocess, not_need_stop of self.model_inputs:",self.model_inputs["not_need_stop"])
 
         target_hidden_states = eagle_get_hidden_states(
             full_hidden_states,
@@ -647,7 +644,6 @@ class MTPProposer(Proposer):
         """
         Main process for MTP inference
         """
-        # print("\nin mtp.py begin of _propose, not_need_stop of self.model_inputs:",self.model_inputs["not_need_stop"])
         for substep in range(self.num_model_steps):
             if self.model_inputs["not_need_stop"]:
                 self.model_inputs["substep"] = substep
@@ -735,7 +731,6 @@ class MTPProposer(Proposer):
 
                 if substep != self.num_model_steps - 1:
                     target_hidden_states = self._get_self_hidden_states(hidden_states)
-        # print("\nin mtp.py end of _propose, not_need_stop of self.model_inputs:",self.model_inputs["not_need_stop"])
 
     def _get_self_hidden_states(self, hidden_states):
         target_hidden_states = eagle_get_self_hidden_states(
