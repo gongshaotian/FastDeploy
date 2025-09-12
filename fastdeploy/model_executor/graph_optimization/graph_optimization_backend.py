@@ -139,10 +139,8 @@ class GraphOptBackend:
 
         assert kwargs["forward_meta"].ids_remove_padding is not None
         real_shape = kwargs["forward_meta"].ids_remove_padding.shape[0]
-        print(f"[GraphOptBackend] real_shape :{real_shape}")
 
         if (not kwargs["forward_meta"].step_use_cudagraph) or (real_shape > self.max_captre_size):
-            print("[GraphOptBackend] run dynamic graph")
             return self.runnable(**kwargs)
         else:
             return self.cudagraph_piecewise_backend.__call__(**kwargs)
