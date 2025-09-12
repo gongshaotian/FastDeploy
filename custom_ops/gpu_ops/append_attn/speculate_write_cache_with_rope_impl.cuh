@@ -92,6 +92,7 @@ __global__ void append_speculate_cache_T_rope_qk_norm_kernel(
           seq_lens_decoder[ori_bi],
           token_id,
           cu_seqlens_q[ori_bi]);
+      return ;  // NOTE(gongshaotian): For CUDAGraph padding
     }
     const int block_offset = write_seq_id % block_size;
 
@@ -397,6 +398,7 @@ __global__ void append_speculate_cache_rope_kernel(
           seq_lens_decoder[ori_bi],
           token_id,
           cu_seqlens_q[ori_bi]);
+      return ;  // NOTE(gongshaotian): For CUDAGraph padding
     }
     const int block_offset = write_seq_id % block_size;
 
@@ -532,6 +534,7 @@ __global__ void append_speculate_cache_neox_rope_kernel(
           seq_lens_decoder[ori_bi],
           token_id,
           cu_seqlens_q[ori_bi]);
+      return ;  // NOTE(gongshaotian): For CUDAGraph padding
     }
     const int block_offset = write_seq_id % block_size;
 
