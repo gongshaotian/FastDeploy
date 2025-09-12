@@ -1452,6 +1452,8 @@ class GPUModelRunner(ModelRunnerBase):
                 ids_remove_padding=self.share_inputs["ids_remove_padding"],  # 6 -> 8 graph -> 8 * voc -> 6 * voc
                 forward_meta=self.forward_meta,
             )
+            if self.use_cudagraph:
+                model_output = model_output[: self.real_token_num]
             paddle.device.synchronize()
             hidden_states = rebuild_padding(
                 model_output,
