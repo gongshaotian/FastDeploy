@@ -635,7 +635,6 @@ class GPUModelRunner(ModelRunnerBase):
             self.share_inputs["min_dec_len"][idx : idx + 1] = max_dec_len
             self.share_inputs["stop_flags"][idx : idx + 1] = False
             self.share_inputs["temperature"][idx : idx + 1] = 1
-
             self.share_inputs["first_token_ids"][idx : idx + 1] = self.share_inputs["input_ids"][idx : idx + 1, :1]
             self.share_inputs["ori_seq_lens_encoder"][idx : idx + 1] = input_length
 
@@ -734,7 +733,6 @@ class GPUModelRunner(ModelRunnerBase):
             0,
             dtype="int64",
         )
-        self.share_inputs["cum_offsets"] = paddle.full([max_num_seqs, 1], 0, dtype="int32")
         self.share_inputs["batch_id_per_token"] = paddle.full(
             [max_num_seqs * self.parallel_config.max_model_len, 1], 0, dtype="int32"
         )
@@ -875,7 +873,6 @@ class GPUModelRunner(ModelRunnerBase):
         # Remove padding
         (
             ids_remove_padding,
-            cum_offsets,
             batch_id_per_token,
             cu_seqlens_q,
             cu_seqlens_k,
@@ -891,7 +888,6 @@ class GPUModelRunner(ModelRunnerBase):
         )
 
         self.share_inputs["ids_remove_padding"].copy_(ids_remove_padding, False)
-        self.share_inputs["cum_offsets"].copy_(cum_offsets, False)
         self.share_inputs["batch_id_per_token"].copy_(batch_id_per_token, False)
         self.share_inputs["cu_seqlens_q"].copy_(cu_seqlens_q, False)
         self.share_inputs["cu_seqlens_k"].copy_(cu_seqlens_k, False)
@@ -1040,7 +1036,6 @@ class GPUModelRunner(ModelRunnerBase):
                 cache_kvs_list.append(value_cache)
 
             self.share_inputs["caches"] = cache_kvs_list
-
         else:
             for i in range(self.model_config.num_hidden_layers):
                 cache_kvs[f"key_caches_{i}"] = paddle.full(
@@ -1128,7 +1123,7 @@ class GPUModelRunner(ModelRunnerBase):
             print(f"\nin gpu_model_runner.py, before circle self.proposer.forward_meta:{self.proposer.forward_meta}")
         while True:
             print(f"\n######### start dummy run times{times}#########\n")
-            times = times+1
+            times = times + 1
             # 1. Initialize forward meta and attention meta data
             self._prepare_inputs()
 
@@ -1156,7 +1151,7 @@ class GPUModelRunner(ModelRunnerBase):
 
                 hidden_states = rebuild_padding(
                     model_output,
-                    self.share_inputs["cum_offsets"],
+                    self.share_inputs["cu_seqlens_q"],
                     self.share_inputs["seq_lens_this_time"],
                     self.share_inputs["seq_lens_decoder"],
                     self.share_inputs["seq_lens_encoder"],
@@ -1261,9 +1256,13 @@ class GPUModelRunner(ModelRunnerBase):
             print(f"\nin gpu_model_runner.py, after post_process self.forward_meta:{self.forward_meta}")
             if self.speculative_decoding:
                 if self.speculative_method == "mtp":
-                    print(f"\nin gpu_model_runner.py,before proposer.run,self.proposer.use_cudagraph:{self.proposer.use_cudagraph},\nself.proposer.forward_meta:{self.proposer.forward_meta}")
+                    print(
+                        f"\nin gpu_model_runner.py,before proposer.run,self.proposer.use_cudagraph:{self.proposer.use_cudagraph},\nself.proposer.forward_meta:{self.proposer.forward_meta}"
+                    )
                     self.proposer.run(full_hidden_states=model_output)
-                    print(f"\nin gpu_model_runner.py,after proposer.run, self.proposer.use_cudagraph:{self.proposer.use_cudagraph},\nself.proposer.forward_meta:{self.proposer.forward_meta}")
+                    print(
+                        f"\nin gpu_model_runner.py,after proposer.run, self.proposer.use_cudagraph:{self.proposer.use_cudagraph},\nself.proposer.forward_meta:{self.proposer.forward_meta}"
+                    )
                 else:
                     self.proposer.run(share_inputs=self.share_inputs)
 
@@ -1459,12 +1458,16 @@ class GPUModelRunner(ModelRunnerBase):
                 model_output = model_output[: self.real_token_num]
                 print(model_output.data_ptr())
             paddle.device.synchronize()
-            output_padding_offset_shape = self.share_inputs["output_padding_offset"].shape if ("output_padding_offset" in self.share_inputs) else None
+            output_padding_offset_shape = (
+                self.share_inputs["output_padding_offset"].shape
+                if ("output_padding_offset" in self.share_inputs)
+                else None
+            )
             print(f"output_padding_offset shape:{output_padding_offset_shape}")
             print(f"seq_lens_decoder:{self.share_inputs['seq_lens_this_time'].shape}")
             hidden_states = rebuild_padding(
                 model_output,
-                self.share_inputs["cum_offsets"],
+                self.share_inputs["cu_seqlens_q"],
                 self.share_inputs["seq_lens_this_time"],
                 self.share_inputs["seq_lens_decoder"],
                 self.share_inputs["seq_lens_encoder"],
@@ -1590,6 +1593,7 @@ class GPUModelRunner(ModelRunnerBase):
         # 7. Update 'infer_seed' and step_cuda()
         self.share_inputs["infer_seed"].add_(self.infer_seed_increment)
         self.share_inputs["infer_seed"][:] %= self.MAX_INFER_SEED
+
         if not envs.ENABLE_V1_KVCACHE_SCHEDULER:
             step_cuda(
                 self.share_inputs,
