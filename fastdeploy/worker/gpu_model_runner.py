@@ -1253,6 +1253,7 @@ class GPUModelRunner(ModelRunnerBase):
         expected_decode_len: int = 1,
         in_capturing: bool = False,
         capture_prefill: bool = False,
+        accept_all_drafts: bool = False,
     ) -> paddle.Tensor:
         """
         Use dummy inputs to run before formal execution.
@@ -1341,6 +1342,7 @@ class GPUModelRunner(ModelRunnerBase):
                     self.sampling_metadata,
                     self.parallel_config.max_model_len,
                     self.share_inputs,
+                    accept_all_drafts,
                 )
                 sampler_output = None
                 if self.parallel_config.tensor_parallel_size > 1:
@@ -1526,9 +1528,21 @@ class GPUModelRunner(ModelRunnerBase):
                         in_capturing=True,
                         expected_decode_len=1,
                     )
-                    logger.info(
-                        f"Warm up the model with the num_tokens:{batch_size}, expected_decode_len:{expected_decode_len}"
+                    logger.info(f"Warm up the Target model with the num_tokens:{batch_size}, expected_decode_len:{1}")
+            for batch_size in sorted(capture_sizes, reverse=True):
+                if batch_size == 1:
+                    logger.info("Skip token_num = 1, when capture Draft model for mtp")
+                else:
+                    assert batch_size % 2 == 0
+                    self._dummy_run(
+                        num_tokens=self.parallel_config.max_num_batched_tokens,
+                        batch_size=int(batch_size / 2),
+                        in_capturing=True,
+                        expected_decode_len=3,
+                        accept_all_drafts=True,
                     )
+                    logger.info(f"Warm up the Draft model with the num_tokens:{batch_size}, expected_decode_len:{3}")
+
         else:
             for batch_size in sorted(capture_sizes, reverse=True):
                 self._dummy_run(
