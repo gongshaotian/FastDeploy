@@ -473,6 +473,7 @@ class SpeculativeSampler(nn.Layer):
             self.speculative_verify_window,
             True,  # enable_topp
             self.speculative_benchmark_mode,
+            accept_all_drafts,
         )
 
         return None
