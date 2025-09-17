@@ -742,7 +742,8 @@ class MTPProposer(Proposer):
                     previous_hidden_states=target_hidden_states,
                     forward_meta=self.forward_meta,
                 )  # 6 -> 8*voc -> 6*voc
-
+                if self.use_cudagraph:
+                    model_output = model_output[: self.real_token_num]
                 hidden_states = rebuild_padding(
                     model_output,
                     self.model_inputs["cu_seqlens_q"],
@@ -886,4 +887,5 @@ class MTPProposer(Proposer):
         # To adapt to CUDA Graph, keep the forward pass at the maximum batch size.
         if self.use_cudagraph:
             self.forward_meta.seq_lens_this_time = self.seq_lens_this_time_buffer
+            self.real_token_num = self.forward_meta.ids_remove_padding.shape[0]
         return
