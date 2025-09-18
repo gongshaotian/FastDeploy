@@ -115,11 +115,10 @@ class MTPProposer(Proposer):
         """Set dummy prefill inputs to model_inputs"""
         max_dec_len = expected_decode_len + 1
 
-        full_length = min(
+        input_length = min(
             num_tokens // batch_size,
             self.parallel_config.max_model_len - max_dec_len,
         )
-        input_length = int(full_length * self.cache_config.kv_cache_ratio)
         block_num = (
             input_length + self.cache_config.block_size - 1
         ) // self.cache_config.block_size + self.cache_config.enc_dec_block_num
@@ -741,7 +740,7 @@ class MTPProposer(Proposer):
                     ids_remove_padding=self.model_inputs["ids_remove_padding"],
                     previous_hidden_states=target_hidden_states,
                     forward_meta=self.forward_meta,
-                )  # 6 -> 8*voc -> 6*voc
+                )
                 if self.use_cudagraph:
                     model_output = model_output[: self.real_token_num]
                 hidden_states = rebuild_padding(
