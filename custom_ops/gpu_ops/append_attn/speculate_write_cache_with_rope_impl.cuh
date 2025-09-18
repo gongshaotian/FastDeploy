@@ -84,15 +84,6 @@ __global__ void append_speculate_cache_T_rope_qk_norm_kernel(
     const int* block_table_now = block_tables + ori_bi * max_blocks_per_seq;
     const int block_idx = block_table_now[write_seq_id / block_size];
     if (block_idx < 0) {
-      printf(
-          "Fatal Error!!!, block idx %d when write_seq_id is %d\n some key var "
-          "%d %d %d %d\n",
-          block_idx,
-          write_seq_id,
-          ori_bi,
-          seq_lens_decoder[ori_bi],
-          token_id,
-          cu_seqlens_q[ori_bi]);
       return ;  // NOTE(gongshaotian): For CUDAGraph padding
     }
     const int block_offset = write_seq_id % block_size;
@@ -391,15 +382,6 @@ __global__ void append_speculate_cache_rope_kernel(
     const int* block_table_now = block_tables + ori_bi * max_blocks_per_seq;
     const int block_idx = block_table_now[write_seq_id / block_size];
     if (block_idx < 0) {
-      printf(
-          "Fatal Error!!!, block idx %d when write_seq_id is %d\n some key var "
-          "%d %d %d %d\n",
-          block_idx,
-          write_seq_id,
-          ori_bi,
-          seq_lens_decoder[ori_bi],
-          token_id,
-          cu_seqlens_q[ori_bi]);
       return ;  // NOTE(gongshaotian): For CUDAGraph padding
     }
     const int block_offset = write_seq_id % block_size;
@@ -527,15 +509,6 @@ __global__ void append_speculate_cache_neox_rope_kernel(
     const int* block_table_now = block_tables + ori_bi * max_blocks_per_seq;
     const int block_idx = block_table_now[write_seq_id / block_size];
     if (block_idx < 0) {
-      printf(
-          "Fatal Error!!!, block idx %d when write_seq_id is %d\n some key var "
-          "%d %d %d %d\n",
-          block_idx,
-          write_seq_id,
-          ori_bi,
-          seq_lens_decoder[ori_bi],
-          token_id,
-          cu_seqlens_q[ori_bi]);
       return ;  // NOTE(gongshaotian): For CUDAGraph padding
     }
     const int block_offset = write_seq_id % block_size;

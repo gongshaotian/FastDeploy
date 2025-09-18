@@ -1520,6 +1520,7 @@ class GPUModelRunner(ModelRunnerBase):
                     f"Warm up the model with the num_tokens:{num_tokens}, expected_decode_len:{expected_decode_len}"
                 )
         elif self.speculative_decoding and self.speculative_method == "mtp":
+            # Capture Target Model without bsz 1
             for batch_size in sorted(capture_sizes, reverse=True):
                 if batch_size == 1:
                     logger.info("Skip token_num = 1, when capture target model for mtp")
@@ -1532,6 +1533,7 @@ class GPUModelRunner(ModelRunnerBase):
                         expected_decode_len=1,
                     )
                     logger.info(f"Warm up the Target model with the num_tokens:{batch_size}, expected_decode_len:{1}")
+            # Capture Draft Model without bsz 1
             for batch_size in sorted(capture_sizes, reverse=True):
                 if batch_size == 1:
                     logger.info("Skip token_num = 1, when capture Draft model for mtp")
@@ -1545,6 +1547,15 @@ class GPUModelRunner(ModelRunnerBase):
                         accept_all_drafts=True,
                     )
                     logger.info(f"Warm up the Draft model with the num_tokens:{batch_size}, expected_decode_len:{3}")
+            # Capture Draft Model with bsz 1
+            self._dummy_run(
+                num_tokens=self.parallel_config.max_num_batched_tokens,
+                batch_size=int(1),
+                in_capturing=True,
+                expected_decode_len=3,
+                accept_all_drafts=False,
+            )
+            logger.info(f"Warm up the Draft model with the num_tokens:{batch_size}, expected_decode_len:{3}")
 
         else:
             for batch_size in sorted(capture_sizes, reverse=True):
