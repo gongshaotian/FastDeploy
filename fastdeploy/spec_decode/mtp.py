@@ -710,7 +710,7 @@ class MTPProposer(Proposer):
 
                 # For speculative decoding
                 self.model_inputs["output_cum_offsets"].copy_(output_cum_offsets, False)
-                self.model_inputs["output_padding_offset"].copy(output_padding_offset, False)
+                self.model_inputs["output_padding_offset"].copy_(output_padding_offset, False)
 
                 # Initialize forward meta data
                 self._initialize_forward_meta()
