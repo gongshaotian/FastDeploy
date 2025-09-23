@@ -246,9 +246,6 @@ class MTPProposer(Proposer):
             self.target_model_inputs["kv_num_blocks_x_cpu"]
         ).cpu()
         self.model_inputs["max_len_kv_cpu"] = paddle.zeros_like(self.target_model_inputs["max_len_kv_cpu"]).cpu()
-        self.model_inputs["target_hidden_states"] = paddle.full(
-            [self.max_model_len * self.fd_config.max_prefill_batch, self.model_config.hidden_size], 0, dtype="bfloat16"
-        )
 
         # Get the attention backend
         attn_cls = get_attention_backend()
@@ -328,6 +325,9 @@ class MTPProposer(Proposer):
 
         self.model_inputs["decoder_tile_ids_per_batch"] = paddle.clone(
             self.target_model_inputs["decoder_tile_ids_per_batch"]
+        )
+        self.model_inputs["target_hidden_states"] = paddle.full(
+            [self.max_model_len * self.fd_config.max_prefill_batch, self.model_config.hidden_size], 0, dtype="bfloat16"
         )
 
         tmp_position_ids = paddle.arange(self.parallel_config.max_model_len).reshape((1, -1))
