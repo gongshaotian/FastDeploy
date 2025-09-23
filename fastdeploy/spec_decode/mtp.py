@@ -246,6 +246,9 @@ class MTPProposer(Proposer):
             self.target_model_inputs["kv_num_blocks_x_cpu"]
         ).cpu()
         self.model_inputs["max_len_kv_cpu"] = paddle.zeros_like(self.target_model_inputs["max_len_kv_cpu"]).cpu()
+        self.model_inputs["target_hidden_states"] = paddle.full(
+            [self.max_model_len * self.fd_config.max_prefill_batch, self.model_config.hidden_size], 0, dtype="bfloat16"
+        )
 
         # Get the attention backend
         attn_cls = get_attention_backend()
@@ -644,10 +647,8 @@ class MTPProposer(Proposer):
             self.target_model_inputs["seq_lens_encoder"],
             self.num_model_steps,
         )
-        if isinstance(target_hidden_states, list):
-            target_hidden_states = target_hidden_states[0]
 
-        return target_hidden_states
+        self.model_inputs["target_hidden_states"].copy_(target_hidden_states, False)
 
     def _post_process(self, sampled_token_ids):
         """
@@ -678,7 +679,7 @@ class MTPProposer(Proposer):
                 self.parallel_config.use_ep,
             )
 
-    def _propose(self, target_hidden_states):
+    def _propose(self):
         """
         Main process for MTP inference
         """
@@ -738,7 +739,7 @@ class MTPProposer(Proposer):
 
                 model_output = self.model(
                     ids_remove_padding=self.model_inputs["ids_remove_padding"],
-                    previous_hidden_states=target_hidden_states,
+                    previous_hidden_states=self.model_inputs["target_hidden_states"],
                     forward_meta=self.forward_meta,
                 )
                 if self.use_cudagraph:
@@ -767,9 +768,8 @@ class MTPProposer(Proposer):
                     paddle.distributed.broadcast(sampled_token_ids, 0)
 
                 self._post_process(sampled_token_ids)
-
                 if substep != self.num_model_steps - 1:
-                    target_hidden_states = self._get_self_hidden_states(hidden_states)
+                    self._get_self_hidden_states(hidden_states)
 
     def _get_self_hidden_states(self, hidden_states):
         target_hidden_states = eagle_get_self_hidden_states(
@@ -778,10 +778,7 @@ class MTPProposer(Proposer):
             self.model_inputs["seq_lens_this_time"],
             self.model_inputs["step_idx"],
         )
-        if isinstance(target_hidden_states, list):
-            target_hidden_states = target_hidden_states[0]
-
-        return target_hidden_states
+        self.model_inputs["target_hidden_states"].copy_(target_hidden_states, False)
 
     def update_task_chunk_prefill(self, task):
         """
@@ -866,8 +863,8 @@ class MTPProposer(Proposer):
 
     def _run_impl(self, full_hidden_states):
         """"""
-        target_hidden_states = self._prepare_inputs(full_hidden_states)
-        self._propose(target_hidden_states=target_hidden_states)
+        self._prepare_inputs(full_hidden_states)
+        self._propose()
         self._update_status()
         if self.hybrid_mode:
             self._extend_draft_token_with_ngram_match()
