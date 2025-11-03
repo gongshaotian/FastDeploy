@@ -72,7 +72,7 @@ __global__ void append_speculate_cache_T_rope_qk_norm_kernel(
     int64_t linear_index = global_hi * head_size + threadIdx.x * VecSize;
     const int token_id = linear_index / hidden_size;
     const int ori_bi = batch_id_per_token[token_id];
-    if (ori_bi == -1) continue;
+    if (ori_bi == -1) continue;   // For CUDAGraph padding
     if (seq_lens_decoder[ori_bi] == 0) continue;
     const int bias = linear_index % hidden_size;
     const int hi = bias / head_size;  // q + k + v
@@ -198,6 +198,9 @@ __global__ void append_clear_cache_int8_block(
   const int token_id = blockIdx.x;
 
   const int bid = batch_id_per_token[token_id];
+  if(bid == -1){
+    return;  // For CUDAGraph padding
+  }
 
   const int start_token_idx = cu_seqlens_q[bid];
   const int head_idx = blockIdx.y * NUM_WARPS + wid;
@@ -272,6 +275,10 @@ __global__ void append_clear_cache_int4_block(
   const int token_id = blockIdx.x;
 
   const int bid = batch_id_per_token[token_id];
+  if (bid == -1){
+    return;  // For CUDAGraph padding
+  }
+
 
   const int start_token_idx = cu_seqlens_q[bid];
   const int head_idx = blockIdx.y * NUM_WARPS + wid;
@@ -371,6 +378,9 @@ __global__ void append_speculate_cache_rope_kernel(
        linear_index += step) {
     const int token_id = linear_index / hidden_size;
     const int ori_bi = batch_id_per_token[token_id];
+    if(ori_bi == -1){
+      continue;  // For CUDAGraph padding
+    }
     if (seq_lens_decoder[ori_bi] == 0) continue;
     const int bias = linear_index % hidden_size;
     const int hi = bias / head_size;  // q + k + v
@@ -498,6 +508,9 @@ __global__ void append_speculate_cache_neox_rope_kernel(
        linear_index += step) {
     const int token_id = linear_index / half_hidden_size;
     const int ori_bi = batch_id_per_token[token_id];
+    if(ori_bi == -1){
+      continue;  // For CUDAGraph padding
+    }
     if (seq_lens_decoder[ori_bi] == 0) continue;
     const int bias = linear_index % half_hidden_size;
     const int hi = bias / half_head_size;  // q + k + v
@@ -628,8 +641,9 @@ __global__ void append_speculate_cache_fp8_rope_qk_norm_dynamic_kernel(
   const int token_id = blockIdx.x;
 
   const int bid = batch_id_per_token[token_id];
-  if (bid == -1) return; // NOTE(gongshaotian): For CUDAGraph padding
-
+  if (bid == -1){
+    return; // For CUDAGraph padding
+  }
   const int start_token_idx = cu_seqlens_q[bid];
   const int head_idx = blockIdx.y * NUM_WARPS + wid;
   int q_head_idx, k_head_idx, v_idx;
@@ -898,6 +912,9 @@ __global__ void append_speculate_cache_int8_rope_kernel(
   const int token_id = blockIdx.x;
 
   const int bid = batch_id_per_token[token_id];
+  if (bid == -1){
+    return; // For CUDAGraph padding
+  }
 
   const int start_token_idx = cu_seqlens_q[bid];
   const int head_idx = blockIdx.y * NUM_WARPS + wid;
@@ -1133,6 +1150,9 @@ __global__ void append_speculate_cache_int8_neox_rope_kernel(
   const int token_id = blockIdx.x;
 
   const int bid = batch_id_per_token[token_id];
+  if(bid == -1){
+    return; // For CUDAGraph padding
+  }
 
   const int start_token_idx = cu_seqlens_q[bid];
   const int head_idx = blockIdx.y * NUM_WARPS + wid;
@@ -1517,6 +1537,9 @@ __global__ void append_speculate_cache_int4_rope_kernel(
   const int token_id = blockIdx.x;
 
   const int bid = batch_id_per_token[token_id];
+  if(bid == -1){
+    return;  // For CUDAGraph padding
+  }
 
   const int start_token_idx = cu_seqlens_q[bid];
   const int head_idx = blockIdx.y * NUM_WARPS + wid;
@@ -1863,6 +1886,9 @@ __global__ void append_speculate_cache_int4_neox_rope_kernel(
   const int token_id = blockIdx.x;
 
   const int bid = batch_id_per_token[token_id];
+  if(bid == -1){
+    return;  // For CUDAGraph padding
+  }
 
   const int start_token_idx = cu_seqlens_q[bid];
   const int head_idx = blockIdx.y * NUM_WARPS + wid;
