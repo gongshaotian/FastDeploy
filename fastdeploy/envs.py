@@ -115,6 +115,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "ENCODE_FEATURE_BOS_SK": lambda: os.getenv("ENCODE_FEATURE_BOS_SK"),
     "FD_ENABLE_E2W_TENSOR_CONVERT": lambda: int(os.getenv("FD_ENABLE_E2W_TENSOR_CONVERT", "0")),
     "FD_MAX_EXTRA_NUM_BATCHED_TOKENS": lambda: int(os.getenv("FD_MAX_EXTRA_NUM_BATCHED_TOKENS", "16384")),
+    "FD_ENABLE_ROLLOUT_ROUTING_REPLAY": lambda: bool(int(os.getenv("FD_ENABLE_ROLLOUT_ROUTING_REPLAY", "0"))),
 }
 
 
