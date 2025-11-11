@@ -26,6 +26,9 @@ from fastdeploy.model_executor.layers.utils import get_tensor
 from fastdeploy.model_executor.utils import slice_fn
 from fastdeploy.platforms import current_platform
 from fastdeploy.worker.experts_manager import RedundantExpertManger
+from fastdeploy.model_executor.forward_meta import ForwardMeta
+from fastdeploy.model_executor.layers.moe.routing_indices_cache import save_routing_to_buffer
+from functools import partial
 
 try:
     from fastdeploy.model_executor.ops.gpu import noaux_tc, noaux_tc_redundant
@@ -532,7 +535,7 @@ class FusedMoE(nn.Layer):
         else:
             self.quant_method.process_loaded_weights(self, state_dict)
 
-    def forward(self, x: paddle.Tensor, gate: nn.Layer):
+    def forward(self, x: paddle.Tensor, gate: nn.Layer, forward_meta: ForwardMeta):
         """
         Defines the forward computation of the moe layer.
 
@@ -543,5 +546,14 @@ class FusedMoE(nn.Layer):
             Tensor: Output tensor.s
 
         """
-        out = self.quant_method.apply(self, x, gate)
+        topk_ids_hookfunc = partial(
+            save_routing_to_buffer,
+            routing_table_buffer=forward_meta.routing_table_buffer,
+            batch_id_per_token=forward_meta.batch_id_per_token,
+            seq_lens_decoder=forward_meta.seq_lens_decoder,
+            cu_seqlens_q=forward_meta.cu_seqlens_q,
+            layer_idx=self.layer_idx,
+        )
+
+        out = self.quant_method.apply(self, x, gate, topk_ids_hookfunc)
         return out
