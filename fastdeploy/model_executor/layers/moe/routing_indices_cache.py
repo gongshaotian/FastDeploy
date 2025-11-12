@@ -15,6 +15,7 @@
 """
 
 import paddle
+import paddle.distributed as dist
 import triton
 import triton.language as tl
 
@@ -24,10 +25,8 @@ def _save_routing_kernel(
     ROUTING_TABLE_BUFFER_PTR,
     TOPK_IDS_PTR,
     BATCH_ID_PER_TOKEN_PTR,
-    TOKEN_RELATIVE_INDICES_PTR,
-    # SEQ_LENS_ENCODER_PTR,
+    CU_SEQLENS_Q_PTR,
     SEQ_LENS_DECODER_PTR,
-    # SEQ_LENS_THIS_TIME_PTR,
     LAYER_IDX,
     TOKEN_NUM,
     TOP_K,
@@ -47,10 +46,15 @@ def _save_routing_kernel(
     topk_vals = tl.load(topk_ids_ptrs, mask=token_mask[:, None])
 
     batch_ids = tl.load(BATCH_ID_PER_TOKEN_PTR + token_offsets, mask=token_mask)
-    token_relative_index = tl.load(TOKEN_RELATIVE_INDICES_PTR + token_offsets, mask=token_mask)
-    len_decoder = tl.load(SEQ_LENS_DECODER_PTR + batch_ids, mask=token_mask)
+    # [0, 3, 4, 10, 12][0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 3, 3]
+    # -> [0, 0, 0, 0, 4, 4, 4, 4, 4, 4, 10, 10]
+    # [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] - [0, 0, 0, 0, 4, 4, 4, 4, 4, 4, 10, 10]
+    # -> [0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 0, 1]
+    start_offsets = tl.load(CU_SEQLENS_Q_PTR + batch_ids, mask=token_mask)
+    token_relative_index = token_offsets - start_offsets
 
     # [BLOCK_SIZE_M]
+    len_decoder = tl.load(SEQ_LENS_DECODER_PTR + batch_ids, mask=token_mask)
     token_seq_pos = len_decoder + token_relative_index
 
     STRIDE_BUF_SEQ = NUM_HIDDEN_LAYERS * MAX_MODEL_LEN * TOP_K
@@ -76,27 +80,27 @@ def save_routing_to_buffer(
     routing_table_buffer: paddle.Tensor,  # [max_num_seqs, num_layers, max_len, top_k]
     topk_ids: paddle.Tensor,  # [token_num, top_k]
     batch_id_per_token: paddle.Tensor,  # [token_num]
-    # seq_lens_encoder: paddle.Tensor,  # [max_num_seqs]
     seq_lens_decoder: paddle.Tensor,  # [max_num_seqs]
-    # seq_lens_this_time: paddle.Tensor,  # [max_num_seqs]
     cu_seqlens_q: paddle.Tensor,  # [max_num_seqs + 1]
     layer_idx: int,
+    tp_size: int,
+    ep_size: int,
+    tp_group: dist.communication.group.Group,
 ):
+    if tp_size > 1 and ep_size > 1:
+        token_num_per_rank = topk_ids.shape[0]
+        topk_ids_all = paddle.zeros([token_num_per_rank * tp_size, topk_ids.shape[1]], dtype=topk_ids.dtype)
+        paddle.distributed.all_gather(topk_ids_all, topk_ids, tp_group)
+        topk_ids = topk_ids_all[:batch_id_per_token.shape[0], :]
+
     token_num, top_k = topk_ids.shape
     if token_num == 0:
         return
 
     max_num_seqs, num_hidden_layers, max_model_len, _ = routing_table_buffer.shape
-    assert topk_ids.shape[1] == routing_table_buffer.shape[3]
-    assert batch_id_per_token.shape[0] == token_num
-    assert seq_lens_decoder.shape[0] == max_num_seqs
-
-    token_indices = paddle.arange(token_num, dtype="int32")
-    # [0, 3, 4, 10, 12][0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 3, 3]
-    # -> [0, 0, 0, 0, 4, 4, 4, 4, 4, 4, 10, 10]
-    # [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] - [0, 0, 0, 0, 4, 4, 4, 4, 4, 4, 10, 10]
-    # -> [0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 0, 1]
-    token_relative_indices = token_indices - cu_seqlens_q.view([-1])[batch_id_per_token].view([-1])
+    assert topk_ids.shape[1] == routing_table_buffer.shape[3], (topk_ids.shape[1], routing_table_buffer.shape[3])
+    assert batch_id_per_token.shape[0] == token_num, (batch_id_per_token.shape[0], token_num)
+    assert seq_lens_decoder.shape[0] == max_num_seqs, (seq_lens_decoder.shape[0], max_num_seqs)
 
     BLOCK_SIZE_M = 128
     BLOCK_SIZE_K = top_k  # 值一般很小，直接设为 top_k
@@ -106,10 +110,8 @@ def save_routing_to_buffer(
         routing_table_buffer,
         topk_ids,
         batch_id_per_token,
-        token_relative_indices,
-        # seq_lens_encoder,
+        cu_seqlens_q,
         seq_lens_decoder,
-        # seq_lens_this_time,
         LAYER_IDX=layer_idx,
         TOKEN_NUM=token_num,
         TOP_K=top_k,
@@ -129,9 +131,7 @@ def save_routing_to_buffer(
 # routing_table_buffer = paddle.full([max_num_seqs, num_layers, max_len, top_k], -1, dtype="int32")
 # topk_ids = paddle.randint(0, 384, [token_num, top_k], dtype="int32")
 # batch_id_per_token = paddle.to_tensor([0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 3, 3], dtype="int32").reshape([-1, 1])
-# # seq_lens_encoder = paddle.to_tensor([3, 1, 6, 2], dtype="int32").reshape([-1, 1])
 # seq_lens_decoder = paddle.to_tensor([0, 2, 0, 3], dtype="int32").reshape([-1, 1])
-# # seq_lens_this_time = paddle.to_tensor([3, 1, 6, 2], dtype="int32").reshape([-1, 1])
 # cu_seqlens_q = paddle.to_tensor([0, 3, 4, 10, 12], dtype="int32").reshape([-1, 1])
 # current_layer_idx = 0
 
@@ -139,9 +139,7 @@ def save_routing_to_buffer(
 #     routing_table_buffer=routing_table_buffer,
 #     topk_ids=topk_ids,
 #     batch_id_per_token=batch_id_per_token,
-#     # seq_lens_encoder=seq_lens_encoder,
 #     seq_lens_decoder=seq_lens_decoder,
-#     # seq_lens_this_time=seq_lens_this_time,
 #     cu_seqlens_q=cu_seqlens_q,
 #     layer_idx=current_layer_idx,
 # )
