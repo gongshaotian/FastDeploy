@@ -46,15 +46,16 @@ def _save_routing_kernel(
     topk_vals = tl.load(topk_ids_ptrs, mask=token_mask[:, None])
 
     batch_ids = tl.load(BATCH_ID_PER_TOKEN_PTR + token_offsets, mask=token_mask)
+    pad_mask = token_mask & (batch_ids != -1)
     # [0, 3, 4, 10, 12][0, 0, 0, 0, 2, 2, 2, 2, 2, 2, 3, 3]
     # -> [0, 0, 0, 0, 4, 4, 4, 4, 4, 4, 10, 10]
     # [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] - [0, 0, 0, 0, 4, 4, 4, 4, 4, 4, 10, 10]
     # -> [0, 1, 2, 3, 0, 1, 2, 3, 4, 5, 0, 1]
-    start_offsets = tl.load(CU_SEQLENS_Q_PTR + batch_ids, mask=token_mask)
+    start_offsets = tl.load(CU_SEQLENS_Q_PTR + batch_ids, mask=pad_mask)
     token_relative_index = token_offsets - start_offsets
 
     # [BLOCK_SIZE_M]
-    len_decoder = tl.load(SEQ_LENS_DECODER_PTR + batch_ids, mask=token_mask)
+    len_decoder = tl.load(SEQ_LENS_DECODER_PTR + batch_ids, mask=pad_mask)
     token_seq_pos = len_decoder + token_relative_index
 
     STRIDE_BUF_SEQ = NUM_HIDDEN_LAYERS * MAX_MODEL_LEN * TOP_K
@@ -71,6 +72,7 @@ def _save_routing_kernel(
     )
 
     pos_mask = token_seq_pos < MAX_MODEL_LEN
+    pos_mask = pos_mask & pad_mask
     final_mask = token_mask[:, None] & pos_mask[:, None]
 
     tl.store(output_ptrs, topk_vals, mask=final_mask)
@@ -91,13 +93,11 @@ def save_routing_to_buffer(
         token_num_per_rank = topk_ids.shape[0]
         topk_ids_all = paddle.zeros([token_num_per_rank * tp_size, topk_ids.shape[1]], dtype=topk_ids.dtype)
         paddle.distributed.all_gather(topk_ids_all, topk_ids, tp_group)
-        topk_ids = topk_ids_all[:batch_id_per_token.shape[0], :]
+        topk_ids = topk_ids_all[: batch_id_per_token.shape[0], :]
 
     token_num, top_k = topk_ids.shape
-    if token_num == 0:
-        return
-
     max_num_seqs, num_hidden_layers, max_model_len, _ = routing_table_buffer.shape
+    assert token_num > 0
     assert topk_ids.shape[1] == routing_table_buffer.shape[3], (topk_ids.shape[1], routing_table_buffer.shape[3])
     assert batch_id_per_token.shape[0] == token_num, (batch_id_per_token.shape[0], token_num)
     assert seq_lens_decoder.shape[0] == max_num_seqs, (seq_lens_decoder.shape[0], max_num_seqs)
