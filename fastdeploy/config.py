@@ -1200,6 +1200,7 @@ class FDConfig:
         test_mode=False,
         enable_attention_dp_balance: bool = False,
         attention_dp_time_out_iters: int = 0,
+        enable_rollout_routing_replay: bool = False,
     ):
         self.model_config: ModelConfig = model_config  # type: ignore
         self.cache_config: CacheConfig = cache_config  # type: ignore
@@ -1217,6 +1218,7 @@ class FDConfig:
         self.moba_attention_config: Optional[MobaAttentionConfig] = moba_attention_config
         self.enable_attention_dp_balance = enable_attention_dp_balance
         self.attention_dp_time_out_iters = attention_dp_time_out_iters
+        self.enable_rollout_routing_replay = enable_rollout_routing_replay
         # Initialize cuda graph capture list
         max_capture_shape = self.parallel_config.max_num_seqs
         if self.speculative_config is not None and self.speculative_config.method == "mtp":
