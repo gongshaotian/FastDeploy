@@ -200,6 +200,7 @@ class FusedMoE(nn.Layer):
         if self.ep_size > 1:
             self.quant_method.init_ep(self)
 
+        self.enable_rollout_routing_replay = fd_config.enable_rollout_routing_replay
         # Merge normal and RL build model
         if gate_correction_bias is not None:
             self.gate_correction_bias = gate_correction_bias
@@ -549,8 +550,8 @@ class FusedMoE(nn.Layer):
 
         """
         topk_ids_hookfunc = None
-        if envs.FD_ENABLE_ROLLOUT_ROUTING_REPLAY:
-            if forward_meta is not None: # forward_meta is None when execute empty_input_forward
+        if self.enable_rollout_routing_replay:
+            if forward_meta is not None:  # forward_meta is None when execute empty_input_forward
                 topk_ids_hookfunc = partial(
                     save_routing_to_buffer,
                     routing_table_buffer=forward_meta.routing_table_buffer,

@@ -81,9 +81,9 @@ def _save_routing_kernel(
 def save_routing_to_buffer(
     routing_table_buffer: paddle.Tensor,  # [max_num_seqs, num_layers, max_len, top_k]
     topk_ids: paddle.Tensor,  # [token_num, top_k]
-    batch_id_per_token: paddle.Tensor,  # [token_num]
-    seq_lens_decoder: paddle.Tensor,  # [max_num_seqs]
-    cu_seqlens_q: paddle.Tensor,  # [max_num_seqs + 1]
+    batch_id_per_token: paddle.Tensor,  # [token_num, 1]
+    seq_lens_decoder: paddle.Tensor,  # [max_num_seqs, 1]
+    cu_seqlens_q: paddle.Tensor,  # [max_num_seqs + 1, 1]
     layer_idx: int,
     tp_size: int,
     ep_size: int,
