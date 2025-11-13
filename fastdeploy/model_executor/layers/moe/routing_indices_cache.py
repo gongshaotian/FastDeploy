@@ -14,10 +14,16 @@
 # limitations under the License.
 """
 
+import copy
+import os
+from typing import Dict
+
 import paddle
 import paddle.distributed as dist
 import triton
 import triton.language as tl
+
+from fastdeploy.config import FDConfig
 
 
 @triton.jit
@@ -143,3 +149,72 @@ def save_routing_to_buffer(
 #     cu_seqlens_q=cu_seqlens_q,
 #     layer_idx=current_layer_idx,
 # )
+
+
+class RoutingReplayManager:
+    def __init__(
+        self,
+        fd_config: FDConfig,
+        output_dir: str = "./routing_replay_output",
+    ):
+        self.max_num_seqs = fd_config.parallel_config.max_num_seqs
+        self.max_model_len = fd_config.model_config.max_model_len
+        self.num_moe_layers = fd_config.model_config.num_hidden_layers - fd_config.model_config.moe_layer_start_index
+        self.moe_top_k = fd_config.model_config.moe_k
+        self.tp_rank = fd_config.parallel_config.tensor_parallel_rank
+
+        self.output_dir = output_dir
+
+        self.routing_batch_to_request: Dict[int, str] = {}
+
+        self.routing_table_buffer = paddle.full(
+            shape=[self.max_num_seqs, self.num_moe_layers, self.max_model_len, self.moe_top_k],
+            fill_value=-1,
+            dtype="int32",
+        )
+
+    def register_request(self, batch_id: int, request_id: str):
+        if batch_id in self.routing_batch_to_request:
+            pre_request_id = self.deregister_request(batch_id)
+            self.save_routing_to_file(batch_id, pre_request_id)
+
+        self.routing_batch_to_request[batch_id] = request_id
+
+    def deregister_request(self, batch_id: int) -> str:
+        assert batch_id in self.routing_batch_to_request
+        return self.routing_batch_to_request.pop(batch_id)
+
+    def get_buffer(self) -> paddle.Tensor:
+        return self.routing_table_buffer
+
+    def clear_buffer_slot(self, batch_id: int):
+        assert 0 <= batch_id < self.max_num_seqs
+        self.routing_table_buffer[batch_id].fill_(-1)
+
+    def clear_buffer(self):
+        self.routing_table_buffer.fill_(-1)
+
+    def save_routing_to_file(
+        self,
+        batch_id: int,
+        request_id: str,
+    ):
+        if self.tp_rank == 0:
+            dir_path = os.path.join(self.output_dir, f"{request_id}")
+            os.makedirs(dir_path, exist_ok=True)
+            batch_buffer = self.routing_table_buffer[batch_id]
+            for layer_id in range(self.num_moe_layers):
+                layer_buffer = batch_buffer[layer_id]
+                print(f"{layer_id=}, {layer_buffer=}")
+                file_path = os.path.join(
+                    dir_path, f"layer_{layer_id}_shape_{self.max_model_len}x{self.moe_top_k}.pdtensor"
+                )
+                paddle.save(layer_buffer, file_path)
+
+        self.clear_buffer_slot(batch_id)
+
+    def save_tail_routing(self):
+        batch_ids = copy.deepcopy(list(self.routing_batch_to_request.keys()))
+        for batch_id in batch_ids:
+            request_id = self.deregister_request(batch_id)
+            self.save_routing_to_file(batch_id, request_id)
