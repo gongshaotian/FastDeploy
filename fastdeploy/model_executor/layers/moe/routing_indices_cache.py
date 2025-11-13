@@ -173,28 +173,15 @@ class RoutingReplayManager:
             dtype="int32",
         )
 
-    def register_request(self, batch_id: int, request_id: str):
-        if batch_id in self.routing_batch_to_request:
-            pre_request_id = self.deregister_request(batch_id)
-            self.save_routing_to_file(batch_id, pre_request_id)
-
-        self.routing_batch_to_request[batch_id] = request_id
-
-    def deregister_request(self, batch_id: int) -> str:
+    def _deregister_request(self, batch_id: int) -> str:
         assert batch_id in self.routing_batch_to_request
         return self.routing_batch_to_request.pop(batch_id)
 
-    def get_buffer(self) -> paddle.Tensor:
-        return self.routing_table_buffer
-
-    def clear_buffer_slot(self, batch_id: int):
+    def _clear_buffer_slot(self, batch_id: int):
         assert 0 <= batch_id < self.max_num_seqs
         self.routing_table_buffer[batch_id].fill_(-1)
 
-    def clear_buffer(self):
-        self.routing_table_buffer.fill_(-1)
-
-    def save_routing_to_file(
+    def _save_routing_to_file(
         self,
         batch_id: int,
         request_id: str,
@@ -211,10 +198,23 @@ class RoutingReplayManager:
                 )
                 paddle.save(layer_buffer, file_path)
 
-        self.clear_buffer_slot(batch_id)
+        self._clear_buffer_slot(batch_id)
+
+    def clear_buffer(self):
+        self.routing_table_buffer.fill_(-1)
+
+    def register_request(self, batch_id: int, request_id: str):
+        if batch_id in self.routing_batch_to_request:
+            pre_request_id = self._deregister_request(batch_id)
+            self._save_routing_to_file(batch_id, pre_request_id)
+
+        self.routing_batch_to_request[batch_id] = request_id
+
+    def get_buffer(self) -> paddle.Tensor:
+        return self.routing_table_buffer
 
     def save_tail_routing(self):
         batch_ids = copy.deepcopy(list(self.routing_batch_to_request.keys()))
         for batch_id in batch_ids:
-            request_id = self.deregister_request(batch_id)
-            self.save_routing_to_file(batch_id, request_id)
+            request_id = self._deregister_request(batch_id)
+            self._save_routing_to_file(batch_id, request_id)
