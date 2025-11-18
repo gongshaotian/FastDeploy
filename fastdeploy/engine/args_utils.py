@@ -398,10 +398,16 @@ class EngineArgs:
     Max waiting steps to sync all dp for prefill tasks available
     """
 
+    enable_async_download_features: bool = False
+    """
+    Flag to enable async download features. Default is False (disabled).
+    """
+
     enable_eplb: bool = False
     """
     Flag to enable eplb
     """
+
     eplb_config: Optional[Dict[str, Any]] = None
     """
     Configuration for eplb.
@@ -702,6 +708,12 @@ class EngineArgs:
             action="store_true",
             default=EngineArgs.enable_expert_parallel,
             help="Enable expert parallelism.",
+        )
+        parallel_group.add_argument(
+            "--enable-async-download-features",
+            action="store_true",
+            default=EngineArgs.enable_async_download_features,
+            help="Enable async download features.",
         )
         parallel_group.add_argument(
             "--enable-eplb",
