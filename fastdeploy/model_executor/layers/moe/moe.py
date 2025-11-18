@@ -554,7 +554,7 @@ class FusedMoE(nn.Layer):
             if forward_meta is not None:  # forward_meta is None when execute empty_input_forward
                 topk_ids_hookfunc = partial(
                     save_routing_to_buffer,
-                    routing_table_buffer=forward_meta.routing_table_buffer,
+                    routing_repaly_table=forward_meta.routing_repaly_table,
                     batch_id_per_token=forward_meta.batch_id_per_token,
                     seq_lens_decoder=forward_meta.seq_lens_decoder,
                     cu_seqlens_q=forward_meta.cu_seqlens_q,
