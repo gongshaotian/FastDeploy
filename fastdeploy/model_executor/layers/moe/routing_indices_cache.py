@@ -259,11 +259,11 @@ class RoutingStoreLocal(RoutingStoreBase):
 
     def __init__(self, fd_config) -> None:
         super().__init__(fd_config=fd_config)
-        self.output_dir = fd_config.routing_replay_config.output_dir  # output_dir: str = "./routing_replay_output",
+        self.routing_store_dir = fd_config.routing_replay_config.routing_store_dir
 
     def put(self, routing_indices: paddle.Tensor, request_id: str, layer_idx: int) -> None:
         """Put the routing indices into store"""
-        dir_path = os.path.join(self.output_dir, f"{request_id}")
+        dir_path = os.path.join(self.routing_store_dir, f"{request_id}")
         os.makedirs(dir_path, exist_ok=True)
         file_path = os.path.join(dir_path, f"layer_{layer_idx}.pdtensor")
         paddle.save(routing_indices, file_path)
@@ -274,7 +274,7 @@ class RoutingStoreLocal(RoutingStoreBase):
         layer_idx: int = None,
     ) -> paddle.Tensor:
         """Get the routing indices from store"""
-        dir_path = os.path.join(self.output_dir, f"{request_id}")
+        dir_path = os.path.join(self.routing_store_dir, f"{request_id}")
         file_path = os.path.join(dir_path, f"layer_{layer_idx}.pdtensor")
         assert os.path.exists(file_path), f"File not found: {file_path}"
         layer_routing_indices = paddle.load(file_path)
@@ -287,7 +287,7 @@ class RoutingStoreLocal(RoutingStoreBase):
         layer_idx: int = None,
     ) -> None:
         """Clear the routing indices of the request"""
-        dir_path = os.path.join(self.output_dir, f"{request_id}")
+        dir_path = os.path.join(self.routing_store_dir, f"{request_id}")
         file_path = os.path.join(dir_path, f"layer_{layer_idx}.pdtensor")
         assert os.path.exists(file_path), f"File not found: {file_path}"
         os.remove(file_path)
@@ -298,9 +298,9 @@ class RoutingStoreLocal(RoutingStoreBase):
 
     def clear_store(self):
         """Clear the routing indices store"""
-        if os.path.isdir(self.output_dir):
-            for file_name in os.listdir(self.output_dir):
-                file_path = os.path.join(self.output_dir, file_name)
+        if os.path.isdir(self.routing_store_dir):
+            for file_name in os.listdir(self.routing_store_dir):
+                file_path = os.path.join(self.routing_store_dir, file_name)
                 shutil.rmtree(file_path)
 
 
