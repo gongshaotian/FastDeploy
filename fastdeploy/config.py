@@ -1157,6 +1157,34 @@ class CommitConfig:
         logger.info("=============================================================")
 
 
+class RoutingReplayConfig:
+    """Configuration for Routing Replay used in RL training"""
+
+    def __init__(self, args) -> None:
+        self.enable_routing_replay: bool = False
+        self.routing_store_type: str = "local"
+
+        # Local routing store
+        self.local_store_dir: str = "./routing_replay_output"
+
+        # AFS routing store
+        self.afs_ip: str = ""
+        self.afs_port: int = 0
+        self.afs_password: str = ""
+        self.afs_user: str = ""
+        self.afs_store_dir: str = ""
+
+        # RDMA routing store
+        pass
+
+        for key, value in args.items():
+            if hasattr(self, key) and value != "None":
+                setattr(self, key, value)
+
+    def __str__(self) -> str:
+        return json.dumps({key: value for key, value in self.__dict__.items()})
+
+
 class FDConfig:
     """
     The configuration class which contains all fastdeploy-related configuration. This
@@ -1200,7 +1228,8 @@ class FDConfig:
         test_mode=False,
         enable_attention_dp_balance: bool = False,
         attention_dp_time_out_iters: int = 0,
-        enable_rollout_routing_replay: bool = False,
+        # enable_rollout_routing_replay: bool = False,
+        routing_replay_config: Optional[RoutingReplayConfig] = None,
     ):
         self.model_config: ModelConfig = model_config  # type: ignore
         self.cache_config: CacheConfig = cache_config  # type: ignore
@@ -1216,9 +1245,11 @@ class FDConfig:
         self.cache_config: CacheConfig = cache_config  # type: ignore
         self.eplb_config: Optional[EPLBConfig] = eplb_config
         self.moba_attention_config: Optional[MobaAttentionConfig] = moba_attention_config
+        self.routing_replay_config = routing_replay_config
         self.enable_attention_dp_balance = enable_attention_dp_balance
         self.attention_dp_time_out_iters = attention_dp_time_out_iters
-        self.enable_rollout_routing_replay = enable_rollout_routing_replay
+        # self.enable_rollout_routing_replay = enable_rollout_routing_replay
+
         # Initialize cuda graph capture list
         max_capture_shape = self.parallel_config.max_num_seqs
         if self.speculative_config is not None and self.speculative_config.method == "mtp":
