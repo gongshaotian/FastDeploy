@@ -33,6 +33,7 @@ from fastdeploy.config import (
     MobaAttentionConfig,
     ModelConfig,
     ParallelConfig,
+    RoutingReplayConfig,
     SpeculativeConfig,
     TaskOption,
 )
@@ -407,9 +408,9 @@ class EngineArgs:
     Configuration for eplb.
     """
 
-    enable_rollout_routing_replay: bool = False
+    routing_replay_config: Optional[Dict[str, Any]] = None
     """
-    Flag to enable rollout routing replay(r3)
+    Flag to rollout routing replay(r3)
     """
 
     def __post_init__(self):
@@ -721,10 +722,10 @@ class EngineArgs:
             help="Config of eplb.",
         )
         parallel_group.add_argument(
-            "--enable-rollout-routing-replay",
-            action="store_true",
-            default=EngineArgs.enable_rollout_routing_replay,
-            help="Flag to enable rollout routing replay(r3).",
+            "--routing-replay-config",
+            type=json.loads,
+            default=EngineArgs.routing_replay_config,
+            help="Flag of rollout routing replay(r3).",
         )
 
         # Load group
@@ -1065,6 +1066,14 @@ class EngineArgs:
                 eplb_args[k] = v
         return EPLBConfig(eplb_args)
 
+    def create_routing_repaly_config(self) -> RoutingReplayConfig:
+        """ """
+        routing_replay_args = asdict(self)
+        if self.eplb_config is not None:
+            for k, v in self.eplb_config.items():
+                routing_replay_args[k] = v
+        return RoutingReplayConfig(routing_replay_args)
+
     def create_engine_config(self, port_availability_check: bool = True) -> FDConfig:
         """
         Create and return a Config object based on the current settings.
@@ -1107,6 +1116,7 @@ class EngineArgs:
         graph_opt_cfg.update_use_cudagraph(self.use_cudagraph)
         moba_attention_config = self.create_moba_attention_config()
         eplb_cfg = self.create_eplb_config()
+        routing_replay_config = self.create_routing_repaly_config()
 
         early_stop_cfg = self.create_early_stop_config()
         early_stop_cfg.update_enable_early_stop(self.enable_early_stop)
@@ -1152,5 +1162,5 @@ class EngineArgs:
             early_stop_config=early_stop_cfg,
             enable_attention_dp_balance=self.enable_attention_dp_balance,
             attention_dp_time_out_iters=self.attention_dp_time_out_iters,
-            enable_rollout_routing_replay=self.enable_rollout_routing_replay,
+            routing_replay_config=routing_replay_config,
         )

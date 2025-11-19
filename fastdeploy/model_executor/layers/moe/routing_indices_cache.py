@@ -304,13 +304,6 @@ class RoutingStoreLocal(RoutingStoreBase):
                 shutil.rmtree(file_path)
 
 
-class RoutingStoreAFS(RoutingStoreBase):
-    """Routing Store using AFS"""
-
-    def __init__(self) -> None:
-        super().__init__()
-
-
 class RoutingStoreRDMA(RoutingStoreBase):
     """Routing Store using RDMA"""
 
@@ -321,8 +314,6 @@ class RoutingStoreRDMA(RoutingStoreBase):
 def get_routing_store(fd_config: FDConfig) -> RoutingStoreBase:
     if fd_config.store_type == "local":
         return RoutingStoreLocal()
-    elif fd_config.store_type == "afs":
-        return RoutingStoreAFS()
     elif fd_config.store_type == "rdma":
         return RoutingStoreRDMA()
     else:
