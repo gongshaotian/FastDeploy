@@ -177,14 +177,11 @@ class RoutingReplayManager:
         batch_id: int,
         request_id: str,
     ):
-        layer_buffer_shape = [self.max_model_len, self.moe_top_k]
         if self.tp_rank == 0:
             batch_buffer = self.routing_replay_table[batch_id]
             for layer_id in range(self.num_moe_layers):
                 layer_buffer = batch_buffer[layer_id]
-                self.routing_store.put(
-                    routing_indices=layer_buffer, request_id=request_id, layer_idx=layer_id, shape=layer_buffer_shape
-                )
+                self.routing_store.put(routing_indices=layer_buffer, request_id=request_id, layer_idx=layer_id)
 
         self._clear_table_slot(batch_id)
 
@@ -259,11 +256,11 @@ class RoutingStoreLocal(RoutingStoreBase):
 
     def __init__(self, fd_config) -> None:
         super().__init__(fd_config=fd_config)
-        self.routing_store_dir = fd_config.routing_replay_config.routing_store_dir
+        self.local_store_dir = fd_config.routing_replay_config.local_store_dir
 
     def put(self, routing_indices: paddle.Tensor, request_id: str, layer_idx: int) -> None:
         """Put the routing indices into store"""
-        dir_path = os.path.join(self.routing_store_dir, f"{request_id}")
+        dir_path = os.path.join(self.local_store_dir, f"{request_id}")
         os.makedirs(dir_path, exist_ok=True)
         file_path = os.path.join(dir_path, f"layer_{layer_idx}.pdtensor")
         paddle.save(routing_indices, file_path)
@@ -274,7 +271,7 @@ class RoutingStoreLocal(RoutingStoreBase):
         layer_idx: int = None,
     ) -> paddle.Tensor:
         """Get the routing indices from store"""
-        dir_path = os.path.join(self.routing_store_dir, f"{request_id}")
+        dir_path = os.path.join(self.local_store_dir, f"{request_id}")
         file_path = os.path.join(dir_path, f"layer_{layer_idx}.pdtensor")
         assert os.path.exists(file_path), f"File not found: {file_path}"
         layer_routing_indices = paddle.load(file_path)
@@ -287,7 +284,7 @@ class RoutingStoreLocal(RoutingStoreBase):
         layer_idx: int = None,
     ) -> None:
         """Clear the routing indices of the request"""
-        dir_path = os.path.join(self.routing_store_dir, f"{request_id}")
+        dir_path = os.path.join(self.local_store_dir, f"{request_id}")
         file_path = os.path.join(dir_path, f"layer_{layer_idx}.pdtensor")
         assert os.path.exists(file_path), f"File not found: {file_path}"
         os.remove(file_path)
@@ -298,9 +295,9 @@ class RoutingStoreLocal(RoutingStoreBase):
 
     def clear_store(self):
         """Clear the routing indices store"""
-        if os.path.isdir(self.routing_store_dir):
-            for file_name in os.listdir(self.routing_store_dir):
-                file_path = os.path.join(self.routing_store_dir, file_name)
+        if os.path.isdir(self.local_store_dir):
+            for file_name in os.listdir(self.local_store_dir):
+                file_path = os.path.join(self.local_store_dir, file_name)
                 shutil.rmtree(file_path)
 
 
@@ -312,9 +309,9 @@ class RoutingStoreRDMA(RoutingStoreBase):
 
 
 def get_routing_store(fd_config: FDConfig) -> RoutingStoreBase:
-    if fd_config.store_type == "local":
-        return RoutingStoreLocal()
-    elif fd_config.store_type == "rdma":
-        return RoutingStoreRDMA()
+    if fd_config.routing_replay_config.routing_store_type == "local":
+        return RoutingStoreLocal(fd_config=fd_config)
+    elif fd_config.routing_replay_config.routing_store_type == "rdma":
+        return RoutingStoreRDMA(fd_config=fd_config)
     else:
         raise ValueError("Invalid store type")

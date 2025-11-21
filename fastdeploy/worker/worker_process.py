@@ -38,6 +38,7 @@ from fastdeploy.config import (
     MobaAttentionConfig,
     ModelConfig,
     ParallelConfig,
+    RoutingReplayConfig,
     SpeculativeConfig,
 )
 from fastdeploy.engine.request import RequestType
@@ -907,6 +908,8 @@ def initialize_fd_config(args, ranks: int = 1, local_rank: int = 0) -> FDConfig:
 
     eplb_config = EPLBConfig(args.eplb_config)
 
+    routing_replay_config = RoutingReplayConfig(args.routing_replay_config)
+
     # Note(tangbinhan): used for load_checkpoint
     model_config.pretrained_config.tensor_parallel_rank = parallel_config.tensor_parallel_rank
     model_config.pretrained_config.tensor_parallel_degree = parallel_config.tensor_parallel_size
@@ -1005,7 +1008,7 @@ def initialize_fd_config(args, ranks: int = 1, local_rank: int = 0) -> FDConfig:
         enable_attention_dp_balance=args.enable_attention_dp_balance,
         attention_dp_time_out_iters=args.attention_dp_time_out_iters,
         eplb_config=eplb_config,
-        routing_replay_config=args.routing_replay_config,
+        routing_replay_config=routing_replay_config,
     )
     update_fd_config_for_mm(fd_config)
 
