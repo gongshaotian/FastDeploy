@@ -190,7 +190,8 @@ class RoutingReplayManager:
         batch_ids = copy.deepcopy(list(self.routing_batch_to_request.keys()))
         for batch_id in batch_ids:
             request_id = self._deregister_request(batch_id)
-            self._put_request_to_store(batch_id, request_id)
+            rollout_id = self.split_request_id(request_id)
+            self._put_request_to_store(batch_id, rollout_id)
 
     def _clear_table_slot(self, batch_id: int):
         assert 0 <= batch_id < self.max_num_seqs
@@ -220,6 +221,14 @@ class RoutingReplayManager:
 
     def get_routing_table(self) -> paddle.Tensor:
         return self.routing_replay_table
+
+    def split_request_id(self, request_id: str):
+        """Split the request id to get rollout id"""
+        chat_type, tmp_str = request_id.split("-", 1)
+        assert chat_type == "chatcmpl"
+        reversed_tmp_str = tmp_str[::-1].split("-", 5)
+        rollout_id = reversed_tmp_str[-1][::-1]
+        return rollout_id
 
 
 class RoutingStoreBase(ABC):
