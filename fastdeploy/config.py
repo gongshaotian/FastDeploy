@@ -1170,9 +1170,10 @@ class RoutingReplayConfig:
         # RDMA routing store
         pass
 
-        for key, value in args.items():
-            if hasattr(self, key) and value != "None":
-                setattr(self, key, value)
+        if args is not None:
+            for key, value in args.items():
+                if hasattr(self, key) and value != "None":
+                    setattr(self, key, value)
 
     def to_json_string(self):
         """
