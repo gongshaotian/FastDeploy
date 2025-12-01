@@ -349,6 +349,8 @@ class ParallelConfig:
         self.do_profile: bool = False
         # Use internode_ll_two_stage or not
         self.use_internode_ll_two_stage: bool = False
+        # enable async download features
+        self.enable_async_download_features: bool = False
 
         self.max_num_batched_tokens: int = 2048
 
@@ -360,6 +362,7 @@ class ParallelConfig:
         self.guided_decoding_backend: str = None
         # disable any whitespace for guided decoding
         self.disable_any_whitespace: bool = True
+
         self.pod_ip: str = None
         # enable the custom all-reduce kernel and fall back to NCCL(dist.all_reduce).
         self.disable_custom_all_reduce: bool = False
@@ -970,6 +973,7 @@ class CacheConfig:
         self.cache_dtype = "bfloat16"
         self.model_cfg = None
         self.enable_chunked_prefill = False
+        self.disable_chunked_mm_input = False
         self.rdma_comm_ports = None
         self.cache_transfer_protocol = None
         self.pd_comm_port = None
@@ -993,7 +997,9 @@ class CacheConfig:
             self.enable_hierarchical_cache = True
 
         if self.model_cfg is not None:
-            if self.model_cfg.quantization_config is not None:
+            if self.model_cfg.quantization is not None and isinstance(self.model_cfg.quantization, dict):
+                self.cache_dtype = self.model_cfg.quantization.get("kv_cache_quant_type", self.cache_dtype)
+            elif self.model_cfg.quantization_config is not None:
                 self.cache_dtype = self.model_cfg.quantization_config.get("kv_cache_quant_type", self.cache_dtype)
             if (
                 hasattr(self.model_cfg, "num_key_value_heads")

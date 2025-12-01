@@ -389,6 +389,14 @@ class EngineArgs:
     Flag to specify the dtype of lm_head as FP32. Default is False (Using model default dtype).
     """
 
+    disable_chunked_mm_input: bool = False
+    """
+    Disable chunked multimodal input processing. When enabled, prevents splitting
+    multimodal (e.g., image) inputs across multiple cache blocks, ensuring each
+    multimodal input is cached as a complete unit. This is required when using
+    prefix caching with multimodal models.
+    """
+
     enable_attention_dp_balance: bool = False
     """
     Flag to enable attention dp balance
@@ -399,10 +407,16 @@ class EngineArgs:
     Max waiting steps to sync all dp for prefill tasks available
     """
 
+    enable_async_download_features: bool = False
+    """
+    Flag to enable async download features. Default is False (disabled).
+    """
+
     enable_eplb: bool = False
     """
     Flag to enable eplb
     """
+
     eplb_config: Optional[Dict[str, Any]] = None
     """
     Configuration for eplb.
@@ -422,8 +436,6 @@ class EngineArgs:
         if self.splitwise_role == "decode":
             self.enable_prefix_caching = False
         if self.speculative_config is not None:
-            self.enable_prefix_caching = False
-        if self.enable_mm:
             self.enable_prefix_caching = False
         if not current_platform.is_cuda():
             self.enable_prefix_caching = False
@@ -710,6 +722,12 @@ class EngineArgs:
             help="Enable expert parallelism.",
         )
         parallel_group.add_argument(
+            "--enable-async-download-features",
+            action="store_true",
+            default=EngineArgs.enable_async_download_features,
+            help="Enable async download features.",
+        )
+        parallel_group.add_argument(
             "--enable-eplb",
             action="store_true",
             default=EngineArgs.enable_eplb,
@@ -853,6 +871,12 @@ class EngineArgs:
             type=lambda s: s.split(",") if s else None,
             default=EngineArgs.rdma_comm_ports,
             help="ports for rdma communication.",
+        )
+        perf_group.add_argument(
+            "--disable-chunked-mm-input",
+            action="store_true",
+            default=EngineArgs.disable_chunked_mm_input,
+            help="Disable chunked mm input.",
         )
 
         perf_group.add_argument(
