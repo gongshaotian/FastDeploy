@@ -181,7 +181,8 @@ class RoutingReplayManager:
             batch_buffer = self.routing_replay_table[batch_id]
             for layer_id in range(self.num_moe_layers):
                 layer_buffer = batch_buffer[layer_id]
-                self.routing_store.put(routing_indices=layer_buffer, request_id=request_id, layer_idx=layer_id)
+                rollout_id = self.split_request_id(request_id)
+                self.routing_store.put(routing_indices=layer_buffer, request_id=rollout_id, layer_idx=layer_id)
 
         self._clear_table_slot(batch_id)
 
@@ -190,8 +191,7 @@ class RoutingReplayManager:
         batch_ids = copy.deepcopy(list(self.routing_batch_to_request.keys()))
         for batch_id in batch_ids:
             request_id = self._deregister_request(batch_id)
-            rollout_id = self.split_request_id(request_id)
-            self._put_request_to_store(batch_id, rollout_id)
+            self._put_request_to_store(batch_id, request_id)
 
     def _clear_table_slot(self, batch_id: int):
         assert 0 <= batch_id < self.max_num_seqs
