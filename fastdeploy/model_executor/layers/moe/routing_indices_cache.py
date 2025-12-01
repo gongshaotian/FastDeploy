@@ -182,7 +182,7 @@ class RoutingReplayManager:
             for layer_id in range(self.num_moe_layers):
                 layer_buffer = batch_buffer[layer_id]
                 rollout_id = self.split_request_id(request_id)
-                self.routing_store.put(routing_indices=layer_buffer, request_id=rollout_id, layer_idx=layer_id)
+                self.routing_store.put(routing_indices=layer_buffer, rollout_id=rollout_id, layer_idx=layer_id)
 
         self._clear_table_slot(batch_id)
 
@@ -207,14 +207,16 @@ class RoutingReplayManager:
 
     def _clear_request_of_store(self, request_id):
         """Clear one request of routing store"""
+        rollout_id = self.split_request_id(request_id)
         for layer_idx in range(self.num_moe_layers):
-            self.routing_store.clear(request_id=request_id, layer_idx=layer_idx)
+            self.routing_store.clear(rollout_id=rollout_id, layer_idx=layer_idx)
 
     def get_request_from_store(self, request_id: str) -> List[paddle.Tensor]:
         """Get the routing indices of the reuest from store"""
         routing_list = []
+        rollout_id = self.split_request_id(request_id)
         for layer_idx in range(self.num_moe_layers):
-            one_layer_routing = self.routing_store.get(request_id, layer_idx)
+            one_layer_routing = self.routing_store.get(rollout_id, layer_idx)
             routing_list.append(one_layer_routing)
 
         return routing_list
@@ -238,17 +240,17 @@ class RoutingStoreBase(ABC):
         self.fd_config = fd_config
 
     @abstractmethod
-    def put(self, routing_indices: paddle.Tensor, request_id: str, layer_idx: Optional[int] = None) -> None:
+    def put(self, routing_indices: paddle.Tensor, rollout_id: str, layer_idx: Optional[int] = None) -> None:
         """Put the routing indices into store"""
         raise NotImplementedError
 
     @abstractmethod
-    def get(self, request_id: str, layer_idx: Optional[int] = None) -> paddle.Tensor:
+    def get(self, rollout_id: str, layer_idx: Optional[int] = None) -> paddle.Tensor:
         """Get the routing indices from store"""
         raise NotImplementedError
 
     @abstractmethod
-    def clear(self, request_id: str, layer_idx: Optional[int] = None) -> None:
+    def clear(self, rollout_id: str, layer_idx: Optional[int] = None) -> None:
         """Clear the routing indices of the request"""
         raise NotImplementedError
 
@@ -267,20 +269,20 @@ class RoutingStoreLocal(RoutingStoreBase):
         super().__init__(fd_config=fd_config)
         self.local_store_dir = fd_config.routing_replay_config.local_store_dir
 
-    def put(self, routing_indices: paddle.Tensor, request_id: str, layer_idx: int) -> None:
+    def put(self, routing_indices: paddle.Tensor, rollout_id: str, layer_idx: int) -> None:
         """Put the routing indices into store"""
-        dir_path = os.path.join(self.local_store_dir, f"{request_id}")
+        dir_path = os.path.join(self.local_store_dir, f"{rollout_id}")
         os.makedirs(dir_path, exist_ok=True)
         file_path = os.path.join(dir_path, f"layer_{layer_idx}.pdtensor")
         paddle.save(routing_indices, file_path)
 
     def get(
         self,
-        request_id: str,
+        rollout_id: str,
         layer_idx: int = None,
     ) -> paddle.Tensor:
         """Get the routing indices from store"""
-        dir_path = os.path.join(self.local_store_dir, f"{request_id}")
+        dir_path = os.path.join(self.local_store_dir, f"{rollout_id}")
         file_path = os.path.join(dir_path, f"layer_{layer_idx}.pdtensor")
         assert os.path.exists(file_path), f"File not found: {file_path}"
         layer_routing_indices = paddle.load(file_path)
@@ -289,11 +291,11 @@ class RoutingStoreLocal(RoutingStoreBase):
 
     def clear(
         self,
-        request_id: str,
+        rollout_id: str,
         layer_idx: int = None,
     ) -> None:
         """Clear the routing indices of the request"""
-        dir_path = os.path.join(self.local_store_dir, f"{request_id}")
+        dir_path = os.path.join(self.local_store_dir, f"{rollout_id}")
         file_path = os.path.join(dir_path, f"layer_{layer_idx}.pdtensor")
         assert os.path.exists(file_path), f"File not found: {file_path}"
         os.remove(file_path)
