@@ -14,6 +14,7 @@
 # limitations under the License.
 """
 
+from functools import partial
 from typing import Optional
 
 import paddle
@@ -22,6 +23,10 @@ from paddleformers.utils.log import logger
 
 from fastdeploy import envs
 from fastdeploy.distributed.communication import tensor_model_parallel_all_reduce
+from fastdeploy.model_executor.forward_meta import ForwardMeta
+from fastdeploy.model_executor.layers.moe.routing_indices_cache import (
+    save_routing_to_buffer,
+)
 from fastdeploy.model_executor.layers.utils import get_tensor
 from fastdeploy.model_executor.utils import h2d_copy, slice_fn
 from fastdeploy.platforms import current_platform
@@ -219,7 +224,7 @@ class FusedMoE(nn.Layer):
         self.is_rearrange = False
         if self.ep_size > 1:
             self.quant_method.init_ep(self)
-
+        self.enable_routing_replay = fd_config.routing_replay_config.enable_routing_replay
         # Merge normal and RL build model
         if gate_correction_bias is not None:
             self.gate_correction_bias = gate_correction_bias
@@ -615,7 +620,7 @@ class FusedMoE(nn.Layer):
 
         return out
 
-    def forward(self, x: paddle.Tensor, gate: nn.Layer):
+    def forward(self, x: paddle.Tensor, gate: nn.Layer, forward_meta: ForwardMeta = None):
         """
         Defines the forward computation of the moe layer.
 
@@ -635,15 +640,15 @@ class FusedMoE(nn.Layer):
         ):
             out = self.forward_split_allgather(x, gate)
         elif self.fd_config.parallel_config.use_ep and self.fd_config.parallel_config.enable_chunked_moe:
-            out = self.forward_chunked_moe(x, gate)
+            out = self.forward_chunked_moe(x, gate, forward_meta)
         else:
-            out = self.forward_normal(x, gate)
+            out = self.forward_normal(x, gate, forward_meta)
 
         if self.reduce_results and self.tp_size > 1:
             out = tensor_model_parallel_all_reduce(out, self.tp_group)
         return out
 
-    def forward_chunked_moe(self, x: paddle.Tensor, gate: nn.Layer):
+    def forward_chunked_moe(self, x: paddle.Tensor, gate: nn.Layer, forward_meta: ForwardMeta = None):
         """
         Split input to multi chunk to reduce the memory usage of moe.
 
@@ -681,7 +686,7 @@ class FusedMoE(nn.Layer):
 
         return out
 
-    def forward_normal(self, x: paddle.Tensor, gate: nn.Layer):
+    def forward_normal(self, x: paddle.Tensor, gate: nn.Layer, forward_meta: ForwardMeta = None):
         """
         Normal mode of forward.
 
@@ -692,5 +697,20 @@ class FusedMoE(nn.Layer):
             Tensor: Output tensor.s
 
         """
-        out = self.quant_method.apply(self, x, gate)
+        topk_ids_hookfunc = None
+        if self.enable_routing_replay:
+            if forward_meta is not None:  # forward_meta is None when execute empty_input_forward
+                topk_ids_hookfunc = partial(
+                    save_routing_to_buffer,
+                    routing_replay_table=forward_meta.routing_replay_table,
+                    batch_id_per_token=forward_meta.batch_id_per_token,
+                    seq_lens_decoder=forward_meta.seq_lens_decoder,
+                    cu_seqlens_q=forward_meta.cu_seqlens_q,
+                    layer_idx=self.layer_idx,
+                    tp_size=self.fd_config.parallel_config.tensor_parallel_size,
+                    ep_size=self.fd_config.parallel_config.expert_parallel_size,
+                    tp_group=self.fd_config.parallel_config.tp_group,
+                )
+
+        out = self.quant_method.apply(self, x, gate, topk_ids_hookfunc=topk_ids_hookfunc)
         return out
