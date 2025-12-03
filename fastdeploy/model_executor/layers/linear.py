@@ -508,7 +508,7 @@ class QKVParallelLinear(ColumnParallelLinear):
     QKVParallelLinear Layer.
     """
 
-    def __init__(self, fd_config, prefix, with_bias=False, add_bias=True):
+    def __init__(self, fd_config, prefix, with_bias=False, add_bias=True, skip_quant=False):
         """
         Initialize the QKV Linear layer with given parameters.
 
@@ -542,6 +542,7 @@ class QKVParallelLinear(ColumnParallelLinear):
             output_size=output_size,
             with_bias=with_bias,
             add_bias=add_bias,
+            skip_quant=skip_quant,
         )
 
     def _get_shard_size_mapping(self, loaded_shard_id: str):
@@ -720,7 +721,6 @@ class RowParallelLinear(LinearBase):
             skip_quant (bool): Whether to skip quantization. Defaults to False.
         """
         self.fd_config = fd_config
-        self.skip_quant = False
         self.nranks = fd_config.parallel_config.tensor_parallel_size
         self.tp_group = fd_config.parallel_config.tp_group
         self.hidden_size = fd_config.model_config.hidden_size
