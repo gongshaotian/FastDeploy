@@ -140,7 +140,11 @@ class RoutingReplayManager:
         self.max_num_seqs = fd_config.scheduler_config.max_num_seqs
         self.max_model_len = fd_config.model_config.max_model_len
         self.num_moe_layers = fd_config.model_config.num_hidden_layers - fd_config.model_config.moe_layer_start_index
-        self.moe_top_k = fd_config.model_config.moe_k
+        
+        if fd_config.model_config.architectures[0] == "Glm4MoeForCausalLM":
+            self.moe_top_k = fd_config.model_config.num_experts_per_tok
+        else:
+            self.moe_top_k = fd_config.model_config.moe_k
         self.tp_rank = fd_config.parallel_config.tensor_parallel_rank
 
         self.routing_store = get_routing_store(fd_config=fd_config)
