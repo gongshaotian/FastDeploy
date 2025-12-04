@@ -325,4 +325,7 @@ def get_routing_store(fd_config: FDConfig) -> RoutingStoreBase:
     elif fd_config.routing_replay_config.routing_store_type == "rdma":
         return RoutingStoreRDMA(fd_config=fd_config)
     else:
-        raise ValueError("Invalid store type")
+        raise ValueError(
+            f"Invalid routing store type: '{fd_config.routing_replay_config.routing_store_type}'. "
+            "Valid types are: 'local', 'rdma'"
+        )
