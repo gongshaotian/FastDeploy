@@ -213,8 +213,8 @@ class Ernie4_5_MoE(nn.Layer):
     def update_state_dict(self, state_dict):
         self.experts.load_state_dict(state_dict, True)
 
-    def forward(self, hidden_states: paddle.Tensor):
-        out = self.experts(hidden_states, self.gate)
+    def forward(self, hidden_states: paddle.Tensor, forward_meta: ForwardMeta = None):
+        out = self.experts(hidden_states, self.gate, forward_meta)
         if self.num_shared_experts > 0:
             s_x = self.shared_experts(hidden_states)
             out = out + s_x
@@ -344,7 +344,7 @@ class Ernie4_5_DecoderLayer(nn.Layer):
             residual,
         )
 
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, forward_meta)
 
         return hidden_states, residual
 
