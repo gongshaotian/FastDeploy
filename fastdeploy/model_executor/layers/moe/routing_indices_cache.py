@@ -212,7 +212,7 @@ class RoutingReplayManager:
             self.routing_store.clear(rollout_id=rollout_id, layer_idx=layer_idx)
 
     def get_request_from_store(self, request_id: str) -> List[paddle.Tensor]:
-        """Get the routing indices of the reuest from store"""
+        """Get the routing indices of the request from store"""
         routing_list = []
         rollout_id = self.split_request_id(request_id)
         for layer_idx in range(self.num_moe_layers):
