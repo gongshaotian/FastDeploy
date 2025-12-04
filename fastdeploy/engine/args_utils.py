@@ -1141,7 +1141,6 @@ class EngineArgs:
         moba_attention_config = self.create_moba_attention_config()
         eplb_cfg = self.create_eplb_config()
         routing_replay_config = self.create_routing_repaly_config()
-        print("after create {routing_replay_config}")
 
         early_stop_cfg = self.create_early_stop_config()
         early_stop_cfg.update_enable_early_stop(self.enable_early_stop)
