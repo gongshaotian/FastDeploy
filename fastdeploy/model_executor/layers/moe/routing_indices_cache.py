@@ -49,9 +49,14 @@ def _save_routing_kernel(
     token_mask = token_offsets < TOKEN_NUM
 
     k_offsets = tl.arange(0, BLOCK_SIZE_K)
+
+    k_mask = k_offsets < TOP_K
+    
     topk_ids_ptrs = TOPK_IDS_PTR + token_offsets[:, None] * TOP_K + k_offsets[None, :]
     # [BLOCK_SIZE_M, BLOCK_SIZE_K]
-    topk_vals = tl.load(topk_ids_ptrs, mask=token_mask[:, None])
+
+    load_mask = token_mask[:, None] & k_mask[None, :]
+    topk_vals = tl.load(topk_ids_ptrs, mask=load_mask)
 
     batch_ids = tl.load(BATCH_ID_PER_TOKEN_PTR + token_offsets, mask=token_mask)
     pad_mask = token_mask & (batch_ids != -1)
@@ -79,9 +84,14 @@ def _save_routing_kernel(
         + k_offsets[None, :]
     )
 
+ 
     pos_mask = token_seq_pos < MAX_MODEL_LEN
     pos_mask = pos_mask & pad_mask
-    final_mask = token_mask[:, None] & pos_mask[:, None]
+    
+    # [BLOCK_SIZE_M, BLOCK_SIZE_K]
+    pos_mask = pos_mask[:, None] & k_mask[None, :]
+
+    final_mask = load_mask & pos_mask
 
     tl.store(output_ptrs, topk_vals, mask=final_mask)
 
@@ -111,7 +121,7 @@ def save_routing_to_buffer(
     assert seq_lens_decoder.shape[0] == max_num_seqs, (seq_lens_decoder.shape[0], max_num_seqs)
 
     BLOCK_SIZE_M = 128
-    BLOCK_SIZE_K = top_k
+    BLOCK_SIZE_K = triton.next_power_of_2(top_k) # top_k
 
     grid = (triton.cdiv(token_num, BLOCK_SIZE_M),)
     _save_routing_kernel[grid](
