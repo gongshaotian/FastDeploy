@@ -719,7 +719,9 @@ class FusedMoE(nn.Layer):
 
         return out
 
-    def forward_normal(self, x: paddle.Tensor, gate: nn.Layer, topk_ids_hookfunc: Callable = None):
+    def forward_normal(
+        self, x: paddle.Tensor, gate: nn.Layer, forward_meta: ForwardMeta, topk_ids_hookfunc: Callable = None
+    ):
         """
         Normal mode of forward.
 
