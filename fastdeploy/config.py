@@ -1493,7 +1493,7 @@ class RoutingReplayConfig:
         self.local_store_dir: str = "./routing_replay_output"
 
         # RDMA routing store
-        pass
+        # TODO: Add RDMA routing store configuration attributes here when the feature is implemented.
 
         if args is not None:
             for key, value in args.items():
