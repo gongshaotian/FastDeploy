@@ -241,7 +241,8 @@ class RoutingReplayManager:
     def split_request_id(self, request_id: str):
         """Split the request id to get rollout id"""
         chat_type, tmp_str = request_id.split("-", 1)
-        assert chat_type == "chatcmpl"
+        # NOTE(gongshaotian): only support chatcmpl now
+        # assert chat_type == "chatcmpl"
         reversed_tmp_str = tmp_str[::-1].split("-", 5)
         rollout_id = reversed_tmp_str[-1][::-1]
         return rollout_id
