@@ -486,12 +486,14 @@ class GPUModelRunner(ModelRunnerBase):
                 multi_vision_inputs["grid_thw_lst"].extend(
                     inputs["grid_thw"][request.num_image_start : request.num_image_end]
                 )
-                multi_vision_inputs["cu_seqlens"].extend(
-                    inputs["vit_seqlen"][request.num_image_start : request.num_image_end]
-                )
-                multi_vision_inputs["vit_position_ids_lst"].extend(
-                    inputs["vit_position_ids"][request.num_image_start : request.num_image_end]
-                )
+                if "vit_seqlen" in inputs:
+                    multi_vision_inputs["cu_seqlens"].extend(
+                        inputs["vit_seqlen"][request.num_image_start : request.num_image_end]
+                    )
+                if "vit_position_ids" in inputs:
+                    multi_vision_inputs["vit_position_ids_lst"].extend(
+                        inputs["vit_position_ids"][request.num_image_start : request.num_image_end]
+                    )
             else:
                 vision_inputs = inputs
                 if self.encoder_cache:
@@ -1018,10 +1020,14 @@ class GPUModelRunner(ModelRunnerBase):
         """
         # NOTE(gongshaotian): The maximum decoding length is equal to the expected decoded tokens plus the eos token
         max_dec_len = expected_decode_len + 1
-        input_length = min(
-            num_tokens // (1 if capture_prefill else batch_size),
-            self.model_config.max_model_len - max_dec_len,
-        )
+        if batch_size == 0:
+            # Note(ZKK): divided by 0 is invalid, here we give a input_length = 1
+            input_length = 1
+        else:
+            input_length = min(
+                num_tokens // (1 if capture_prefill else batch_size),
+                self.model_config.max_model_len - max_dec_len,
+            )
 
         # NOTE(wanglongzhi): When the full length is too large, DeepEP's buffer size will not be enough to cause the result to appear nan.
         # TODO(wanglongzhi): Figure out the accurate buffer size of DeepEP.
@@ -2221,13 +2227,6 @@ class GPUModelRunner(ModelRunnerBase):
         for proc in self.sampling_metadata.logits_processors:
             proc.update_state(self.share_inputs)
 
-        # NOTE(wufeisheng): If `not_need_stop`` is False, it means the current worker is in an idle state.
-        # This logic is not used in TP (Tensor Parallelism) mode. However, in EP (Expert Parallelism) mode,
-        # when there is data on other runner, the current runner is required to execute part of the model.
-        if not self.not_need_stop():
-            self._execute_empty_input(self.forward_meta)
-            return None
-
         # 2. Padding inputs for cuda graph
         self.padding_cudagraph_inputs()
 
@@ -2243,6 +2242,14 @@ class GPUModelRunner(ModelRunnerBase):
                 self.forward_meta.ids_remove_padding,
                 self.forward_meta,
             )
+
+        # NOTE(wufeisheng): If `not_need_stop`` is False, it means the current worker is in an idle state.
+        # This logic is not used in TP (Tensor Parallelism) mode. However, in EP (Expert Parallelism) mode,
+        # Then there is data on other runner, the current runner is required to execute part of the model.
+        # But not need to run the below code.
+        if not self.not_need_stop():
+            return None
+
         if self.use_cudagraph:
             model_output = model_output[: self.real_token_num]
 
@@ -2769,9 +2776,13 @@ class GPUModelRunner(ModelRunnerBase):
         return image_features
 
     def extract_vision_features_qwen(self, inputs: list[paddle.Tensor]) -> paddle.Tensor:
-        assert inputs["images"] is not None
-        grid_thw = inputs["grid_thw"]
-        images = inputs["images"]
+        if envs.FD_ENABLE_MAX_PREFILL:
+            images = paddle.concat(inputs["images_lst"]).cast("bfloat16")
+            grid_thw = paddle.to_tensor(inputs["grid_thw_lst"], dtype="int64")
+        else:
+            assert inputs["images"] is not None
+            grid_thw = inputs["grid_thw"]
+            images = inputs["images"]
         with paddle.amp.auto_cast(
             True,
             custom_black_list=self.amp_black,
