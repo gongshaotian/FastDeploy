@@ -51,7 +51,7 @@ def _save_routing_kernel(
     k_offsets = tl.arange(0, BLOCK_SIZE_K)
 
     k_mask = k_offsets < TOP_K
-    
+
     topk_ids_ptrs = TOPK_IDS_PTR + token_offsets[:, None] * TOP_K + k_offsets[None, :]
     # [BLOCK_SIZE_M, BLOCK_SIZE_K]
 
@@ -84,10 +84,9 @@ def _save_routing_kernel(
         + k_offsets[None, :]
     )
 
- 
     pos_mask = token_seq_pos < MAX_MODEL_LEN
     pos_mask = pos_mask & pad_mask
-    
+
     # [BLOCK_SIZE_M, BLOCK_SIZE_K]
     pos_mask = pos_mask[:, None] & k_mask[None, :]
 
@@ -116,12 +115,13 @@ def save_routing_to_buffer(
     token_num, top_k = topk_ids.shape
     max_num_seqs, num_hidden_layers, max_model_len, _ = routing_replay_table.shape
     assert token_num > 0
+
     assert topk_ids.shape[1] == routing_replay_table.shape[3], (topk_ids.shape[1], routing_replay_table.shape[3])
     assert batch_id_per_token.shape[0] == token_num, (batch_id_per_token.shape[0], token_num)
     assert seq_lens_decoder.shape[0] == max_num_seqs, (seq_lens_decoder.shape[0], max_num_seqs)
 
     BLOCK_SIZE_M = 128
-    BLOCK_SIZE_K = triton.next_power_of_2(top_k) # top_k
+    BLOCK_SIZE_K = triton.next_power_of_2(top_k)  # top_k
 
     grid = (triton.cdiv(token_num, BLOCK_SIZE_M),)
     _save_routing_kernel[grid](
@@ -150,7 +150,7 @@ class RoutingReplayManager:
         self.max_num_seqs = fd_config.scheduler_config.max_num_seqs
         self.max_model_len = fd_config.model_config.max_model_len
         self.num_moe_layers = fd_config.model_config.num_hidden_layers - fd_config.model_config.moe_layer_start_index
-        
+
         if fd_config.model_config.architectures[0] == "Glm4MoeForCausalLM":
             self.moe_top_k = fd_config.model_config.num_experts_per_tok
         else:
