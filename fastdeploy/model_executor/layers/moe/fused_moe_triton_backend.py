@@ -1481,6 +1481,7 @@ class BlockWiseFP8MoEMethod(QuantMethodBase):
         layer: nn.Layer,
         x: paddle.Tensor,
         gate: nn.Layer,
+        topk_ids_hookfunc: Callable = None,
     ) -> paddle.Tensor:
         """
         Triton compute Fused MoE.
@@ -1503,6 +1504,8 @@ class BlockWiseFP8MoEMethod(QuantMethodBase):
             True,  # apply_norm_weight
             False,
         )
+        if topk_ids_hookfunc is not None:
+            topk_ids_hookfunc(topk_ids=topk_ids)
 
         config = {
             "BLOCK_SIZE_M": 64,
