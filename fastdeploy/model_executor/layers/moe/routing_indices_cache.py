@@ -331,7 +331,7 @@ class RoutingStoreRDMA(RoutingStoreBase):
     def put(self, routing_indices: paddle.Tensor, rollout_id: str, layer_idx: int) -> None:
         """Put the routing indices into store"""
         rdma_rollout_key = f"{rollout_id}_{layer_idx}"
-        # async put
+        # sync put
         asyncio.run(self.p2p_client.put(rdma_rollout_key, routing_indices))
 
     def get(
@@ -352,13 +352,13 @@ class RoutingStoreRDMA(RoutingStoreBase):
     ) -> None:
         """Clear the routing indices of the request"""
         rdma_rollout_key = f"{rollout_id}_{layer_idx}"
-        # async delete
+        # sync delete
         asyncio.run(self.p2p_client.delete(rdma_rollout_key))
 
     def clear_store(self):
         """Clear the routing indices store"""
-        # async clear routing store
-        self.p2p_client.clear()
+        # sync clear routing store
+        asyncio.run(self.p2p_client.clear())
 
 
 def get_routing_store(fd_config: FDConfig) -> RoutingStoreBase:
