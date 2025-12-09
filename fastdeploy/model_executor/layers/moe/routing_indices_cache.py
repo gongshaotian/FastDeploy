@@ -14,6 +14,7 @@
 # limitations under the License.
 """
 
+import asyncio
 import copy
 import os
 import shutil
@@ -315,8 +316,49 @@ class RoutingStoreLocal(RoutingStoreBase):
 class RoutingStoreRDMA(RoutingStoreBase):
     """Routing Store using RDMA"""
 
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, fd_config) -> None:
+        super().__init__(fd_config=fd_config)
+        try:
+            # Only used in RLHF
+            from p2pstore import P2PClient, P2PConfig
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError(" RoutingStoreRDMA and p2pstore only support in RLHF. ")
+
+        p2p_store_server = fd_config.routing_replay_config.p2p_store_server
+        p2pConfig = P2PConfig(metadata_server=p2p_store_server)
+        self.p2p_client = P2PClient(p2pConfig)
+
+    def put(self, routing_indices: paddle.Tensor, rollout_id: str, layer_idx: int) -> None:
+        """Put the routing indices into store"""
+        rdma_rollout_key = f"{rollout_id}_{layer_idx}"
+        # async put
+        asyncio.run(self.p2p_client.put(rdma_rollout_key, routing_indices))
+
+    def get(
+        self,
+        rollout_id: str,
+        layer_idx: int = None,
+    ) -> paddle.Tensor:
+        """Get the routing indices from store"""
+        rdma_rollout_key = f"{rollout_id}_{layer_idx}"
+        # sync get
+        tmp_routing = asyncio.run(self.p2p_client.get(rdma_rollout_key))
+        return tmp_routing
+
+    def clear(
+        self,
+        rollout_id: str,
+        layer_idx: int = None,
+    ) -> None:
+        """Clear the routing indices of the request"""
+        rdma_rollout_key = f"{rollout_id}_{layer_idx}"
+        # async delete
+        asyncio.run(self.p2p_client.delete(rdma_rollout_key))
+
+    def clear_store(self):
+        """Clear the routing indices store"""
+        # async clear routing store
+        self.p2p_client.clear()
 
 
 def get_routing_store(fd_config: FDConfig) -> RoutingStoreBase:
