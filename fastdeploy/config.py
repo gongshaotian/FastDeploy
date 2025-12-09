@@ -1498,7 +1498,7 @@ class RoutingReplayConfig:
         self.local_store_dir: str = "./routing_replay_output"
 
         # RDMA routing store
-        self.p2p_store_server: str = ""
+        self.rdma_store_server: str = ""
 
         if args is not None:
             for key, value in args.items():

@@ -339,8 +339,8 @@ class RoutingStoreRDMA(RoutingStoreBase):
         except ModuleNotFoundError:
             raise ModuleNotFoundError(" RoutingStoreRDMA and p2pstore only support in RLHF. ")
 
-        p2p_store_server = fd_config.routing_replay_config.p2p_store_server
-        p2pConfig = P2PConfig(metadata_server=p2p_store_server)
+        rdma_store_server = fd_config.routing_replay_config.rdma_store_server
+        p2pConfig = P2PConfig(metadata_server=rdma_store_server)
         self.p2p_client = P2PClient(p2pConfig)
 
     def put(self, routing_indices: paddle.Tensor, rollout_id: str, layer_idx: int) -> None:
