@@ -1488,14 +1488,17 @@ class RoutingReplayConfig:
     """Configuration for Routing Replay used in RL training"""
 
     def __init__(self, args) -> None:
+
         self.enable_routing_replay: bool = False
+
+        # Routing store type: local/rdma
         self.routing_store_type: str = "local"
 
         # Local routing store
         self.local_store_dir: str = "./routing_replay_output"
 
         # RDMA routing store
-        # TODO: Add RDMA routing store configuration attributes here when the feature is implemented.
+        self.p2p_store_server: str = ""
 
         if args is not None:
             for key, value in args.items():
