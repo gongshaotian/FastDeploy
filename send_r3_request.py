@@ -1,0 +1,158 @@
+import os
+import shutil
+import time
+
+import openai
+import paddle
+
+
+def openai_client():
+    client = openai.Client(
+        base_url="http://0.0.0.0:8888/v1",
+        api_key="EMPTY_API_KEY",
+    )
+    return client
+
+
+# ==========================
+# Test Rollout Routing Replay
+# ==========================
+def calculate_routing_ratio(expected_routing: paddle.Tensor, actual_routing: paddle.Tensor) -> float:
+    """Caculate routing overlap ratio"""
+    assert expected_routing.shape == actual_routing.shape
+
+    total_rows, elements_per_row = expected_routing.shape
+
+    mask1 = paddle.any(expected_routing != -1, axis=1)
+    mask2 = paddle.any(actual_routing != -1, axis=1)
+    valid_mask = mask1 & mask2
+
+    if paddle.sum(valid_mask.cast("int32")) == 0:
+        return paddle.to_tensor(0.0)
+
+    valid_expected_routing = expected_routing[valid_mask]  # [n_valid, top_k]
+    valid_actual_routing = actual_routing[valid_mask]  # [n_valid, top_k]
+    # n_valid = valid_expected_routing.shape[0]
+
+    # valid_expected_routing: [n_valid, top_k, 1], valid_actual_routing: [n_valid, 1, top_k]
+    # -> equals: [n_valid, top_k, top_k]
+    equals = valid_expected_routing.unsqueeze(2) == valid_actual_routing.unsqueeze(1)
+
+    overlap_mask = paddle.any(equals, axis=2)  # [n_valid, 8]
+
+    overlap_counts = paddle.sum(overlap_mask.cast("float32"), axis=1)  # [n_valid]
+    overlap_ratios = overlap_counts / elements_per_row  # [n_valid]
+
+    return paddle.mean(overlap_ratios)
+
+
+# Streaming test
+def send_r3_streaming_chat(openai_client, user_id: str = ""):
+    """
+    Test streaming chat functionality with the local service
+    """
+    response = openai_client.chat.completions.create(
+        model="default",
+        messages=[
+            {"role": "system", "content": "You are a helpful AI assistant."},
+            {"role": "user", "content": "List 3 countries and their capitals."},
+            {
+                "role": "assistant",
+                "content": "China(Beijing), France(Paris), Australia(Canberra).",
+            },
+            {"role": "user", "content": "OK, tell more."},
+        ],
+        temperature=1,
+        top_p=0,
+        max_tokens=1024,
+        stream=True,
+        user=user_id,  # "r3_chat_completion_stream_test",
+    )
+    time.sleep(5)
+    return response
+
+
+def send_r3_non_streaming_chat(openai_client, user_id: str = ""):
+    """
+    Test non-streaming chat functionality with the local service
+    """
+    # send test request
+    response = openai_client.chat.completions.create(
+        model="default",
+        messages=[
+            {"role": "system", "content": "You are a helpful AI assistant."},
+            {"role": "user", "content": "List 3 countries and their capitals."},
+        ],
+        temperature=1,
+        top_p=0,
+        max_tokens=1024,
+        stream=False,
+        user=user_id,  # "rollout_routing_replay_chat_completion_nonstream_test"
+    )
+
+    time.sleep(5)
+    return response
+
+
+def generated_base_line_routing_index(openai_client):
+    # generate streaming chat routing index
+    send_r3_streaming_chat(openai_client, user_id="r3_chat_completion_stream")
+    # generate non streaming chat routing index
+    send_r3_streaming_chat(openai_client, user_id="r3_chat_completion_nonstream")
+
+    # check the routing is generated correctly
+    ori_dir = "./routing_replay_output"
+    assert os.path.exists(f"{ori_dir}/r3_chat_completion_stream")
+    assert os.path.exists(f"{ori_dir}/r3_chat_completion_nonstream")
+
+    # move the baseline to the routing_replay_output_baseline folder
+    target_dir = "./routing_replay_output_baseline"
+    if not os.path.exists(target_dir):
+        os.makedirs(target_dir)
+    shutil.move(f"{ori_dir}/r3_chat_completion_stream", f"{target_dir}/r3_chat_completion_stream")
+    shutil.move(f"{ori_dir}/r3_chat_completion_nonstream", f"{target_dir}/r3_chat_completion_nonstream")
+
+
+def test_routing_replay_chat_completion(openai_client):
+    """Test rollout routing replay chat completion"""
+    moe_layer_num = 27
+    # maybe need to generate baseline routing index
+    if not os.path.exists("./routing_replay_output_baseline/r3_chat_completion_stream") or not os.path.exists(
+        "./routing_replay_output_baseline/r3_chat_completion_nonstream"
+    ):
+        generated_base_line_routing_index(openai_client)
+    assert (
+        len(os.listdir("./routing_replay_output_baseline/r3_chat_completion_stream")) == moe_layer_num
+    ), f"routing index number should equal to moe layer number {moe_layer_num}"
+    assert (
+        len(os.listdir("./routing_replay_output_baseline/r3_chat_completion_nonstream")) == moe_layer_num
+    ), f"routing index number should equal to moe layer number {moe_layer_num}"
+
+    # test streaming chat
+    send_r3_streaming_chat(openai_client, user_id="r3_chat_completion_stream")
+    for layer_index in range(moe_layer_num):
+        routing_path = f"r3_chat_completion_stream/layer_{layer_index}.pdtensor"
+        generated_routing = paddle.load(f"./routing_replay_output/{routing_path}")
+        baseline_routing = paddle.load(f"./routing_replay_output_baseline/{routing_path}")
+        print(f"generated_routing: {generated_routing}")
+        print(f"baseline_routing: {baseline_routing}")
+        overlap_ratio = calculate_routing_ratio(generated_routing, baseline_routing)
+        assert (
+            overlap_ratio == 1.0
+        ), f"the routing overlap ratio of the layer {layer_index} should be equal to baseline routing index, but got {overlap_ratio}"
+
+    # test non streaming chat
+    send_r3_streaming_chat(openai_client, user_id="r3_chat_completion_nonstream")
+    for layer_index in range(moe_layer_num):
+        routing_path = f"r3_chat_completion_nonstream/layer_{layer_index}.pdtensor"
+        generated_routing = paddle.load(f"./routing_replay_output/{routing_path}")
+        baseline_routing = paddle.load(f"./routing_replay_output_baseline/{routing_path}")
+        overlap_ratio = calculate_routing_ratio(generated_routing, baseline_routing)
+        assert (
+            overlap_ratio == 1.0
+        ), f"the routing overlap ratio of the layer {layer_index} should be equal to baseline routing index, but got {overlap_ratio}"
+
+
+if __name__ == "__main__":
+    client = openai_client()
+    test_routing_replay_chat_completion(client)
