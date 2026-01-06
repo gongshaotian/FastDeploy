@@ -177,7 +177,7 @@ class RoutingReplayManager:
         # Save requests that have been finished for the current slot
         if batch_id in self.routing_batch_to_request:
             pre_request_id = self._deregister_request(batch_id)
-            self._put_request_to_store(batch_id, pre_request_id)
+            asyncio.run(self._put_request_to_store(batch_id, pre_request_id))
         # Register the new request
         self.routing_batch_to_request[batch_id] = request_id
 
@@ -188,18 +188,23 @@ class RoutingReplayManager:
         assert batch_id in self.routing_batch_to_request
         return self.routing_batch_to_request.pop(batch_id)
 
-    def _put_request_to_store(
+    async def _put_request_to_store(
         self,
         batch_id: int,
         request_id: str,
     ):
+        before_put_request_time = time.perf_counter()
         if self.tp_rank == 0:
             batch_buffer = self.routing_replay_table[batch_id]
+            tasks = []
             for layer_id in range(self.num_moe_layers):
                 layer_buffer = batch_buffer[layer_id]
                 rollout_id = self.split_request_id(request_id)
-                self.routing_store.put(routing_indices=layer_buffer, rollout_id=rollout_id, layer_idx=layer_id)
-
+                tasks.append(
+                    self.routing_store.put(routing_indices=layer_buffer, rollout_id=rollout_id, layer_idx=layer_id)
+                )
+            await asyncio.gather(*tasks)
+        print(f"[R3] Async put {request_id} time cost: {time.perf_counter() - before_put_request_time}")
         self._clear_table_slot(batch_id)
 
     def put_table_to_store(self):
@@ -207,7 +212,7 @@ class RoutingReplayManager:
         batch_ids = copy.deepcopy(list(self.routing_batch_to_request.keys()))
         for batch_id in batch_ids:
             request_id = self._deregister_request(batch_id)
-            self._put_request_to_store(batch_id, request_id)
+            asyncio.run(self._put_request_to_store(batch_id, request_id))
 
     def _clear_table_slot(self, batch_id: int):
         assert 0 <= batch_id < self.max_num_seqs
@@ -262,7 +267,7 @@ class RoutingStoreBase(ABC):
         self.fd_config = fd_config
 
     @abstractmethod
-    def put(self, routing_indices: paddle.Tensor, rollout_id: str, layer_idx: Optional[int] = None) -> None:
+    async def put(self, routing_indices: paddle.Tensor, rollout_id: str, layer_idx: Optional[int] = None) -> None:
         """Put the routing indices into store"""
         raise NotImplementedError
 
@@ -292,12 +297,17 @@ class RoutingStoreLocal(RoutingStoreBase):
         self.local_store_dir = fd_config.routing_replay_config.local_store_dir
         self.clear_store()
 
-    def put(self, routing_indices: paddle.Tensor, rollout_id: str, layer_idx: int) -> None:
+    async def put(self, routing_indices: paddle.Tensor, rollout_id: str, layer_idx: int) -> None:
         """Put the routing indices into store"""
+        routing_key = f"{rollout_id}_{layer_idx}"
+
+        # async put
+        time_before_put = time.perf_counter()
         dir_path = os.path.join(self.local_store_dir, f"{rollout_id}")
         os.makedirs(dir_path, exist_ok=True)
         file_path = os.path.join(dir_path, f"layer_{layer_idx}.pdtensor")
         paddle.save(routing_indices, file_path)
+        print(f"[R3] The routing key {routing_key} put cost is {time.perf_counter()-time_before_put}s")
 
     def get(
         self,
@@ -351,16 +361,19 @@ class RoutingStoreRDMA(RoutingStoreBase):
         self.p2p_client = P2PClient(p2pConfig)
         self.clear_store()
 
-    def put(self, routing_indices: paddle.Tensor, rollout_id: str, layer_idx: int) -> None:
+    async def put(self, routing_indices: paddle.Tensor, rollout_id: str, layer_idx: int) -> None:
         """Put the routing indices into store"""
         rdma_rollout_key = f"{rollout_id}_{layer_idx}"
 
         # async put
         time_before_put = time.perf_counter()
-        routing_indices_pin = routing_indices.pin_memory()
+        routing_indices_pin = routing_indices.cpu()
         routing_indices_np = routing_indices_pin.numpy()
-        asyncio.run(self.p2p_client.put(rdma_rollout_key, routing_indices_np))
-        print(f"Success put with key {rdma_rollout_key}, time cost is {time.perf_counter()-time_before_put} s")
+        copy_time = time.perf_counter()
+        await self.p2p_client.put(rdma_rollout_key, routing_indices_np)
+        print(
+            f"[R3] The routing key {rdma_rollout_key} copy cost is {copy_time-time_before_put}s, put cost is {time.perf_counter()-time_before_put}s"
+        )
 
     def get(
         self,
