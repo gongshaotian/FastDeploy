@@ -19,8 +19,20 @@ def openai_client():
 # ==========================
 def calculate_routing_ratio(expected_routing: paddle.Tensor, actual_routing: paddle.Tensor) -> float:
     """Caculate routing overlap ratio"""
-    assert expected_routing.shape == actual_routing.shape
+    assert (
+        expected_routing.shape == actual_routing.shape
+    ), "Routing shapes not equal. Expected shape {expected_routing.shap} actual shape {actual_routing.shape}."
+    expected_routing_length = get_real_routing_length(expected_routing)
+    actual_routing_length = get_real_routing_length(actual_routing)
 
+    for i in range(expected_routing_length):
+        if not paddle.all(paddle.equal(expected_routing[i], actual_routing[i])).item():
+            print(f"{i}: {expected_routing[i]} {actual_routing[i]}")
+    print(f"Expected routing length {expected_routing_length} actual routing length {actual_routing_length}.")
+
+    assert (
+        expected_routing_length == actual_routing_length
+    ), "Routing real lengths do not match. Expected length {expected_routing_length} actual length {actual_routing_length}."
     total_rows, elements_per_row = expected_routing.shape
 
     mask1 = paddle.any(expected_routing != -1, axis=1)
@@ -44,6 +56,18 @@ def calculate_routing_ratio(expected_routing: paddle.Tensor, actual_routing: pad
     overlap_ratios = overlap_counts / elements_per_row  # [n_valid]
 
     return paddle.mean(overlap_ratios)
+
+
+def get_real_routing_length(routing: paddle.Tensor) -> int:
+    mask = routing == -1
+    mask_float = mask.astype(paddle.float32)
+    row_has_true = paddle.any(mask_float, axis=1).astype(paddle.float32)
+
+    first_true_index = paddle.argmax(row_has_true, axis=0)
+    if row_has_true.any().item():
+        return first_true_index.item()
+    else:
+        return -1
 
 
 # Streaming test
@@ -98,7 +122,7 @@ def generated_base_line_routing_index(openai_client):
     # generate streaming chat routing index
     send_r3_streaming_chat(openai_client, user_id="r3_chat_completion_stream")
     # generate non streaming chat routing index
-    send_r3_streaming_chat(openai_client, user_id="r3_chat_completion_nonstream")
+    send_r3_non_streaming_chat(openai_client, user_id="r3_chat_completion_nonstream")
 
     # check the routing is generated correctly
     ori_dir = "./routing_replay_output"
@@ -131,19 +155,19 @@ def test_routing_replay_chat_completion(openai_client):
     # test streaming chat
     send_r3_streaming_chat(openai_client, user_id="r3_chat_completion_stream")
     for layer_index in range(moe_layer_num):
+        print(f"Stream chat layer index {layer_index}")
         routing_path = f"r3_chat_completion_stream/layer_{layer_index}.pdtensor"
         generated_routing = paddle.load(f"./routing_replay_output/{routing_path}")
         baseline_routing = paddle.load(f"./routing_replay_output_baseline/{routing_path}")
-        print(f"generated_routing: {generated_routing}")
-        print(f"baseline_routing: {baseline_routing}")
         overlap_ratio = calculate_routing_ratio(generated_routing, baseline_routing)
         assert (
             overlap_ratio == 1.0
         ), f"the routing overlap ratio of the layer {layer_index} should be equal to baseline routing index, but got {overlap_ratio}"
 
     # test non streaming chat
-    send_r3_streaming_chat(openai_client, user_id="r3_chat_completion_nonstream")
+    send_r3_non_streaming_chat(openai_client, user_id="r3_chat_completion_nonstream")
     for layer_index in range(moe_layer_num):
+        print(f"Non-Stream chat layer index {layer_index}")
         routing_path = f"r3_chat_completion_nonstream/layer_{layer_index}.pdtensor"
         generated_routing = paddle.load(f"./routing_replay_output/{routing_path}")
         baseline_routing = paddle.load(f"./routing_replay_output_baseline/{routing_path}")

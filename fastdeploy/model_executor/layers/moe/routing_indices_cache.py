@@ -209,6 +209,7 @@ class RoutingReplayManager:
 
     def put_table_to_store(self):
         """Put the routing table"""
+        print("[R3] Put routing table to store.")
         batch_ids = copy.deepcopy(list(self.routing_batch_to_request.keys()))
         for batch_id in batch_ids:
             request_id = self._deregister_request(batch_id)
