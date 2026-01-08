@@ -25,7 +25,7 @@ def calculate_routing_ratio(expected_routing: paddle.Tensor, actual_routing: pad
     expected_routing_length = get_real_routing_length(expected_routing)
     actual_routing_length = get_real_routing_length(actual_routing)
 
-    for i in range(max(expected_routing_length,actual_routing_length)):
+    for i in range(max(expected_routing_length, actual_routing_length)):
         if not paddle.all(paddle.equal(expected_routing[i], actual_routing[i])).item():
             print(f"token index {i}:\n expected_routing:{expected_routing[i]}\n actual_routing: {actual_routing[i]}\n")
     # print(f"Expected routing length {expected_routing_length} actual routing length {actual_routing_length}.")
@@ -135,26 +135,28 @@ def generated_base_line_routing_index(openai_client):
     shutil.move(f"{ori_dir}/r3_chat_completion_stream", f"{target_dir}/r3_chat_completion_stream")
     shutil.move(f"{ori_dir}/r3_chat_completion_nonstream", f"{target_dir}/r3_chat_completion_nonstream")
 
+
 def wait_for_file(file_path, timeout=20, check_interval=0.1):
     start_time = time.perf_counter()
-    deadline = start_time + timeout  
-    
+    deadline = start_time + timeout
+
     while True:
         # check timeout or not
         current_time = time.perf_counter()
         if current_time >= deadline:
             return False
-        
+
         # check file generated
         if os.path.exists(file_path):
             return True
-        
+
         sleep_time = min(check_interval, deadline - current_time)
         time.sleep(sleep_time)
 
+
 def test_routing_replay_chat_completion(openai_client):
     """Test rollout routing replay chat completion"""
-    moe_layer_num = 37 # EB45:27 EB5:37
+    moe_layer_num = 37  # EB45:27 EB5:37
     ori_dir = "./routing_replay_output"
     # maybe need to generate baseline routing index
     if not os.path.exists("./routing_replay_output_baseline/r3_chat_completion_stream") or not os.path.exists(
@@ -197,8 +199,8 @@ def test_routing_replay_chat_completion(openai_client):
         assert (
             overlap_ratio >= 0.999
         ), f"the routing overlap ratio of the layer {layer_index} should be equal to baseline routing index, but got {overlap_ratio}"
-    
-    shutil.rmtree(f"./routing_replay_output")
+
+    shutil.rmtree("./routing_replay_output")
 
 
 if __name__ == "__main__":
