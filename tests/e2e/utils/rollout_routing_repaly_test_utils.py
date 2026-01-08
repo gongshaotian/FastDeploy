@@ -6,12 +6,12 @@ import openai
 import paddle
 
 
-def openai_client():
-    client = openai.Client(
-        base_url="http://0.0.0.0:8888/v1",
-        api_key="EMPTY_API_KEY",
-    )
-    return client
+# def openai_client():
+#     client = openai.Client(
+#         base_url="http://0.0.0.0:8888/v1",
+#         api_key="EMPTY_API_KEY",
+#     )
+#     return client
 
 
 # ==========================
@@ -117,23 +117,24 @@ def send_r3_non_streaming_chat(openai_client, user_id: str = ""):
     return response
 
 
-def generated_base_line_routing_index(openai_client):
+def generated_base_line_routing_index(openai_client, cur_save_routing_path, baseline_path):
     # generate streaming chat routing index
     send_r3_streaming_chat(openai_client, user_id="r3_chat_completion_stream")
     # generate non streaming chat routing index
     send_r3_non_streaming_chat(openai_client, user_id="r3_chat_completion_nonstream")
 
     # check the routing is generated correctly
-    ori_dir = "./routing_replay_output"
-    wait_for_file(f"{ori_dir}/r3_chat_completion_stream")
-    wait_for_file(f"{ori_dir}/r3_chat_completion_nonstream")
+    stream_cur_save_routing_path = os.path.join(cur_save_routing_path, "r3_chat_completion_stream")
+    nonstream_cur_save_routing_path = os.path.join(cur_save_routing_path, "r3_chat_completion_nonstream")
+    stream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_stream")
+    nonstream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_nonstream")
+
+    wait_for_file(stream_cur_save_routing_path)
+    wait_for_file(nonstream_cur_save_routing_path)
 
     # move the baseline to the routing_replay_output_baseline folder
-    target_dir = "./routing_replay_output_baseline"
-    if not os.path.exists(target_dir):
-        os.makedirs(target_dir)
-    shutil.move(f"{ori_dir}/r3_chat_completion_stream", f"{target_dir}/r3_chat_completion_stream")
-    shutil.move(f"{ori_dir}/r3_chat_completion_nonstream", f"{target_dir}/r3_chat_completion_nonstream")
+    # shutil.move(stream_cur_save_routing_path, stream_baseline_path)
+    # shutil.move(nonstream_cur_save_routing_path, nonstream_baseline_path)
 
 
 def wait_for_file(file_path, timeout=20, check_interval=0.1):
@@ -154,17 +155,24 @@ def wait_for_file(file_path, timeout=20, check_interval=0.1):
         time.sleep(sleep_time)
 
 
-def test_routing_replay_chat_completion(openai_client):
+def test_routing_replay_chat_completion(openai_client, moe_layer_num: int, model_name: str):
     """Test rollout routing replay chat completion"""
-    moe_layer_num = 37  # EB45:27 EB5:37
-    ori_dir = "./routing_replay_output"
-    # maybe need to generate baseline routing index
-    if not os.path.exists("./routing_replay_output_baseline/r3_chat_completion_stream") or not os.path.exists(
-        "./routing_replay_output_baseline/r3_chat_completion_nonstream"
-    ):
-        generated_base_line_routing_index(openai_client)
-    routing_layer_num_1 = len(os.listdir("./routing_replay_output_baseline/r3_chat_completion_stream"))
-    routing_layer_num_2 = len(os.listdir("./routing_replay_output_baseline/r3_chat_completion_nonstream"))
+    cur_save_routing_path = f"./R3_tmp/routing_replay_output_{model_name}/"
+    model_path = os.getenv("MODEL_PATH")
+    if model_path:
+        baseline_path = os.path.join(model_path, f"/routing_replay_output_baseline_{model_name}")
+    else:
+        baseline_path = f"./R3_BaseLine/routing_replay_output_baseline_{model_name}"
+    stream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_stream")
+    nonstream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_nonstream")
+
+    # Maybe need to generate baseline routing index
+    if not os.path.exists(stream_baseline_path) or not os.path.exists(nonstream_baseline_path):
+        generated_base_line_routing_index(openai_client, cur_save_routing_path, baseline_path)
+        raise FileNotFoundError(f"Not find the R3 baseline file {nonstream_baseline_path} or {stream_baseline_path}.")
+
+    routing_layer_num_1 = len(os.listdir(stream_baseline_path))
+    routing_layer_num_2 = len(os.listdir(nonstream_baseline_path))
     assert (
         routing_layer_num_1 == moe_layer_num
     ), f"routing index number {routing_layer_num_1} should equal to moe layer number {moe_layer_num}"
@@ -172,39 +180,33 @@ def test_routing_replay_chat_completion(openai_client):
         routing_layer_num_2 == moe_layer_num
     ), f"routing index number {routing_layer_num_2} should equal to moe layer number {moe_layer_num}"
 
-    # test streaming chat
+    # Test streaming chat
     send_r3_streaming_chat(openai_client, user_id="r3_chat_completion_stream")
     for layer_index in range(moe_layer_num):
-        # print(f"Stream chat layer index {layer_index}")
-        routing_path = f"r3_chat_completion_stream/layer_{layer_index}.pdtensor"
-        wait_for_file(f"./routing_replay_output/{routing_path}")
+        cur_routing_path = os.path.join(cur_save_routing_path, f"r3_chat_completion_stream/layer_{layer_index}.pdtensor")
+        baseline_routing_path = os.path.join(stream_baseline_path, f"layer_{layer_index}.pdtensor")
+        wait_for_file(cur_routing_path)
 
-        generated_routing = paddle.load(f"./routing_replay_output/{routing_path}")
-        baseline_routing = paddle.load(f"./routing_replay_output_baseline/{routing_path}")
+        generated_routing = paddle.load(cur_routing_path)
+        baseline_routing = paddle.load(baseline_routing_path)
         overlap_ratio = calculate_routing_ratio(baseline_routing, generated_routing)
         assert (
             overlap_ratio >= 0.999
         ), f"the routing overlap ratio of the layer {layer_index} should be equal to baseline routing index, but got {overlap_ratio}"
 
-    # test non streaming chat
+    # Test non streaming chat
     send_r3_non_streaming_chat(openai_client, user_id="r3_chat_completion_nonstream")
     for layer_index in range(moe_layer_num):
-        # print(f"Non-Stream chat layer index {layer_index}")
-        routing_path = f"r3_chat_completion_nonstream/layer_{layer_index}.pdtensor"
-        wait_for_file(f"./routing_replay_output/{routing_path}")
+        cur_routing_path = os.path.join(cur_save_routing_path, f"r3_chat_completion_nonstream/layer_{layer_index}.pdtensor")
+        baseline_routing_path = os.path.join(nonstream_baseline_path, f"layer_{layer_index}.pdtensor")
 
-        generated_routing = paddle.load(f"./routing_replay_output/{routing_path}")
-        baseline_routing = paddle.load(f"./routing_replay_output_baseline/{routing_path}")
+        wait_for_file(cur_routing_path)
+
+        generated_routing = paddle.load(cur_routing_path)
+        baseline_routing = paddle.load(baseline_routing_path)
         overlap_ratio = calculate_routing_ratio(baseline_routing, generated_routing)
         assert (
             overlap_ratio >= 0.999
         ), f"the routing overlap ratio of the layer {layer_index} should be equal to baseline routing index, but got {overlap_ratio}"
 
-    shutil.rmtree("./routing_replay_output")
-
-
-if __name__ == "__main__":
-    client = openai_client()
-    for i in range(100):
-        print(f"range {i}")
-        test_routing_replay_chat_completion(client)
+    # shutil.rmtree(cur_save_routing_path)
