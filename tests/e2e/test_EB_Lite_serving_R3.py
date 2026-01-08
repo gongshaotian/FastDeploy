@@ -1,13 +1,5 @@
 import os
 import shutil
-import time
-
-import openai
-import paddle
-
-import os
-import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -15,7 +7,6 @@ import time
 
 import openai
 import pytest
-import requests
 from utils.rollout_routing_repaly_test_utils import test_routing_replay_chat_completion
 from utils.serving_utils import (
     FD_API_PORT,
@@ -119,9 +110,10 @@ def openai_client():
     )
     return client
 
+
 # ==========================
 # Test Rollout Routing Replay
 # ==========================
 def test_r3_accuracy(openai_client):
-    moe_layer_num = 27 # EB45 moe layer num: 27
+    moe_layer_num = 27  # EB45 moe layer num: 27
     test_routing_replay_chat_completion(openai_client=openai_client, moe_layer_num=moe_layer_num, model_name="eb45")

@@ -1,17 +1,7 @@
 import os
-import shutil
 import time
 
-import openai
 import paddle
-
-
-# def openai_client():
-#     client = openai.Client(
-#         base_url="http://0.0.0.0:8888/v1",
-#         api_key="EMPTY_API_KEY",
-#     )
-#     return client
 
 
 # ==========================
@@ -28,7 +18,6 @@ def calculate_routing_ratio(expected_routing: paddle.Tensor, actual_routing: pad
     for i in range(max(expected_routing_length, actual_routing_length)):
         if not paddle.all(paddle.equal(expected_routing[i], actual_routing[i])).item():
             print(f"token index {i}:\n expected_routing:{expected_routing[i]}\n actual_routing: {actual_routing[i]}\n")
-    # print(f"Expected routing length {expected_routing_length} actual routing length {actual_routing_length}.")
 
     assert (
         expected_routing_length == actual_routing_length
@@ -44,7 +33,6 @@ def calculate_routing_ratio(expected_routing: paddle.Tensor, actual_routing: pad
 
     valid_expected_routing = expected_routing[valid_mask]  # [n_valid, top_k]
     valid_actual_routing = actual_routing[valid_mask]  # [n_valid, top_k]
-    # n_valid = valid_expected_routing.shape[0]
 
     # valid_expected_routing: [n_valid, top_k, 1], valid_actual_routing: [n_valid, 1, top_k]
     # -> equals: [n_valid, top_k, top_k]
@@ -100,7 +88,7 @@ def send_r3_non_streaming_chat(openai_client, user_id: str = ""):
     """
     Test non-streaming chat functionality with the local service
     """
-    # send test request
+    # Send test request
     response = openai_client.chat.completions.create(
         model="default",
         messages=[
@@ -118,21 +106,21 @@ def send_r3_non_streaming_chat(openai_client, user_id: str = ""):
 
 
 def generated_base_line_routing_index(openai_client, cur_save_routing_path, baseline_path):
-    # generate streaming chat routing index
+    # Generate streaming chat routing index
     send_r3_streaming_chat(openai_client, user_id="r3_chat_completion_stream")
-    # generate non streaming chat routing index
+    # Generate non streaming chat routing index
     send_r3_non_streaming_chat(openai_client, user_id="r3_chat_completion_nonstream")
 
-    # check the routing is generated correctly
+    # Check the routing is generated correctly
     stream_cur_save_routing_path = os.path.join(cur_save_routing_path, "r3_chat_completion_stream")
     nonstream_cur_save_routing_path = os.path.join(cur_save_routing_path, "r3_chat_completion_nonstream")
-    stream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_stream")
-    nonstream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_nonstream")
 
     wait_for_file(stream_cur_save_routing_path)
     wait_for_file(nonstream_cur_save_routing_path)
 
-    # move the baseline to the routing_replay_output_baseline folder
+    # Move the baseline to the routing_replay_output_baseline folder
+    # stream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_stream")
+    # nonstream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_nonstream")
     # shutil.move(stream_cur_save_routing_path, stream_baseline_path)
     # shutil.move(nonstream_cur_save_routing_path, nonstream_baseline_path)
 
@@ -142,12 +130,12 @@ def wait_for_file(file_path, timeout=20, check_interval=0.1):
     deadline = start_time + timeout
 
     while True:
-        # check timeout or not
+        # Check timeout or not
         current_time = time.perf_counter()
         if current_time >= deadline:
             return False
 
-        # check file generated
+        # Check file generated
         if os.path.exists(file_path):
             return True
 
@@ -183,7 +171,9 @@ def test_routing_replay_chat_completion(openai_client, moe_layer_num: int, model
     # Test streaming chat
     send_r3_streaming_chat(openai_client, user_id="r3_chat_completion_stream")
     for layer_index in range(moe_layer_num):
-        cur_routing_path = os.path.join(cur_save_routing_path, f"r3_chat_completion_stream/layer_{layer_index}.pdtensor")
+        cur_routing_path = os.path.join(
+            cur_save_routing_path, f"r3_chat_completion_stream/layer_{layer_index}.pdtensor"
+        )
         baseline_routing_path = os.path.join(stream_baseline_path, f"layer_{layer_index}.pdtensor")
         wait_for_file(cur_routing_path)
 
@@ -197,7 +187,9 @@ def test_routing_replay_chat_completion(openai_client, moe_layer_num: int, model
     # Test non streaming chat
     send_r3_non_streaming_chat(openai_client, user_id="r3_chat_completion_nonstream")
     for layer_index in range(moe_layer_num):
-        cur_routing_path = os.path.join(cur_save_routing_path, f"r3_chat_completion_nonstream/layer_{layer_index}.pdtensor")
+        cur_routing_path = os.path.join(
+            cur_save_routing_path, f"r3_chat_completion_nonstream/layer_{layer_index}.pdtensor"
+        )
         baseline_routing_path = os.path.join(nonstream_baseline_path, f"layer_{layer_index}.pdtensor")
 
         wait_for_file(cur_routing_path)
