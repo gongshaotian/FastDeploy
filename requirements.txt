@@ -45,3 +45,4 @@ einops
 setproctitle
 aistudio_sdk
 p2pstore
+flashinfer-python-paddle
