@@ -1562,6 +1562,9 @@ class RoutingReplayConfig:
         # RDMA routing store
         self.rdma_store_server: str = ""
 
+        # Only save last turn
+        self.only_last_turn: bool = False
+
         if args is not None:
             for key, value in args.items():
                 if hasattr(self, key) and value != "None":

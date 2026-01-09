@@ -152,6 +152,7 @@ class RoutingReplayManager:
         self.max_num_seqs = fd_config.scheduler_config.max_num_seqs
         self.max_model_len = fd_config.model_config.max_model_len
         self.num_moe_layers = fd_config.model_config.num_hidden_layers - fd_config.model_config.moe_layer_start_index
+        self.only_last_turn = fd_config.routing_replay_config.only_last_turn
 
         if fd_config.model_config.architectures[0] == "Glm4MoeForCausalLM":
             self.moe_top_k = fd_config.model_config.num_experts_per_tok
@@ -203,6 +204,9 @@ class RoutingReplayManager:
                 tasks.append(
                     self.routing_store.put(routing_indices=layer_buffer, rollout_id=rollout_id, layer_idx=layer_id)
                 )
+            if self.only_last_turn:
+                prefix_batch = self.get_needed_clear_ids(rollout_id)
+                tasks.append(self.routing_store.clear_prefix_batch(roullout_id_prefixes=prefix_batch))
             await asyncio.gather(*tasks)
         print(f"[R3] Async put {request_id} time cost: {time.perf_counter() - before_put_request_time}")
         self._clear_table_slot(batch_id)
@@ -247,13 +251,36 @@ class RoutingReplayManager:
         return self.routing_replay_table
 
     def split_request_id(self, request_id: str):
-        """Split the request id to get rollout id"""
+        """
+        Split the request id to get rollout id.
+
+        request_id: "chatcmpl-request.user-uuid"
+        rollout_id: "request.user"
+            example: "chatcmpl-xxx_xxx_epoch_15:2:2:1-uuid" -> "xxx_xxx_epoch_15:2:2:1"
+        """
         chat_type, tmp_str = request_id.split("-", 1)
         # NOTE(gongshaotian): only support chatcmpl now
         # assert chat_type == "chatcmpl"
         reversed_tmp_str = tmp_str[::-1].split("-", 5)
         rollout_id = reversed_tmp_str[-1][::-1]
         return rollout_id
+
+    def get_needed_clear_ids(self, roullout_id: str) -> List[str]:
+        """
+        Generate the prefix IDs for all closed multi-round tasks.
+        rollout_id: "xxx_xxx_epoch_15:2:2:1"
+            example: xxx_xxx_data_id:gen_id:turn_id:segment_id
+        """
+        reversed_segment_id, reversed_turn_id, reversed_prefix_gen_id = roullout_id[::-1].split(":", 2)
+        prefix_gen_id = reversed_prefix_gen_id[::-1]
+        turn_id = eval(reversed_turn_id[::-1])
+        segment_id = eval(reversed_segment_id[::-1])
+
+        assert turn_id >= 0 and segment_id >= 0
+        prefix_batch = []
+        if turn_id > 0:
+            prefix_batch.append(f"{prefix_gen_id}:{(turn_id-1)}:{segment_id}")
+        return prefix_batch
 
     def clear_request(self, batch_id: int):
         """Clear the routing indices of the request"""
@@ -287,6 +314,11 @@ class RoutingStoreBase(ABC):
         self,
     ):
         """Clear the routing indices store"""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def clear_prefix_batch(self, roullout_id_prefixes: List[str]):
+        """Clear the routing indices"""
         raise NotImplementedError
 
 
@@ -345,6 +377,10 @@ class RoutingStoreLocal(RoutingStoreBase):
                 file_path = os.path.join(self.local_store_dir, file_name)
                 shutil.rmtree(file_path)
 
+    async def clear_prefix_batch(self, roullout_id_prefixes: List[str]):
+        # async delete
+        print(f"[R3] clear_prefix_batch {roullout_id_prefixes}")
+
 
 class RoutingStoreRDMA(RoutingStoreBase):
     """Routing Store using RDMA"""
@@ -396,6 +432,11 @@ class RoutingStoreRDMA(RoutingStoreBase):
         rdma_rollout_key = f"{rollout_id}_{layer_idx}"
         # sync delete
         asyncio.run(self.p2p_client.delete(rdma_rollout_key))
+
+    async def clear_prefix_batch(self, roullout_id_prefixes: List[str]):
+        # async delete
+        await self.p2p_client.delete_prefix_batch(roullout_id_prefixes)
+        print(f"[R3] clear_prefix_batch {roullout_id_prefixes}")
 
     def clear_store(self):
         """Clear the routing indices store"""
