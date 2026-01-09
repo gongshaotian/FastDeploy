@@ -261,7 +261,9 @@ class RoutingReplayManager:
         """
         chat_type, tmp_str = request_id.split("-", 1)
         # NOTE(gongshaotian): only support chatcmpl now
-        assert chat_type == "chatcmpl", "Rollout Routing Replay only supports chatcmpl"
+        assert (
+            chat_type == "chatcmpl"
+        ), "Rollout Routing Replay only supports chatcmpl. Please check whether the request type and userid settings are correct."
         reversed_tmp_str = tmp_str[::-1].split("-", 5)
         rollout_id = reversed_tmp_str[-1][::-1]
         return rollout_id
