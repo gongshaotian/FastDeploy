@@ -26,6 +26,7 @@ import paddle
 import paddle.distributed as dist
 import triton
 import triton.language as tl
+from paddleformers.utils.log import logger
 
 from fastdeploy.config import FDConfig
 
@@ -208,12 +209,12 @@ class RoutingReplayManager:
                 prefix_batch = self.get_needed_clear_ids(rollout_id)
                 tasks.append(self.routing_store.clear_prefix_batch(roullout_id_prefixes=prefix_batch))
             await asyncio.gather(*tasks)
-        print(f"[R3] Async put {request_id} time cost: {time.perf_counter() - before_put_request_time}")
+        logger.info(f"[R3] Async put {request_id} time cost: {time.perf_counter() - before_put_request_time}")
         self._clear_table_slot(batch_id)
 
     def put_table_to_store(self):
         """Put the routing table"""
-        print("[R3] Put routing table to store.")
+        logger.info("[R3] Put routing table to store.")
         batch_ids = copy.deepcopy(list(self.routing_batch_to_request.keys()))
         for batch_id in batch_ids:
             request_id = self._deregister_request(batch_id)
@@ -340,7 +341,7 @@ class RoutingStoreLocal(RoutingStoreBase):
         os.makedirs(dir_path, exist_ok=True)
         file_path = os.path.join(dir_path, f"layer_{layer_idx}.pdtensor")
         paddle.save(routing_indices, file_path)
-        print(f"[R3] The routing key {routing_key} put cost is {time.perf_counter()-time_before_put}s")
+        logger.info(f"[R3] The routing key {routing_key} put cost is {time.perf_counter()-time_before_put}s")
 
     def get(
         self,
@@ -379,7 +380,7 @@ class RoutingStoreLocal(RoutingStoreBase):
 
     async def clear_prefix_batch(self, roullout_id_prefixes: List[str]):
         # async delete
-        print(f"[R3] clear_prefix_batch {roullout_id_prefixes}")
+        logger.info(f"[R3] clear_prefix_batch {roullout_id_prefixes}")
 
 
 class RoutingStoreRDMA(RoutingStoreBase):
@@ -408,7 +409,7 @@ class RoutingStoreRDMA(RoutingStoreBase):
         routing_indices_np = routing_indices_pin.numpy()
         copy_time = time.perf_counter()
         await self.p2p_client.put(rdma_rollout_key, routing_indices_np)
-        print(
+        logger.info(
             f"[R3] The routing key {rdma_rollout_key} copy cost is {copy_time-time_before_put}s, put cost is {time.perf_counter()-time_before_put}s"
         )
 
@@ -436,7 +437,7 @@ class RoutingStoreRDMA(RoutingStoreBase):
     async def clear_prefix_batch(self, roullout_id_prefixes: List[str]):
         # async delete
         await self.p2p_client.delete_prefix_batch(roullout_id_prefixes)
-        print(f"[R3] clear_prefix_batch {roullout_id_prefixes}")
+        logger.info(f"[R3] clear_prefix_batch {roullout_id_prefixes}")
 
     def clear_store(self):
         """Clear the routing indices store"""
