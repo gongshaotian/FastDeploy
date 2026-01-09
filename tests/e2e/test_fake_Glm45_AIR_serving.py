@@ -22,7 +22,7 @@ import time
 
 import pytest
 import requests
-from utils.rollout_routing_repaly_test_utils import test_routing_replay_chat_completion
+from utils.rollout_routing_repaly_test_utils import check_routing_replay_chat_completion
 from utils.serving_utils import (
     FD_API_PORT,
     FD_CACHE_QUEUE_PORT,
@@ -185,6 +185,6 @@ def test_lm_head_fp32(api_url, headers, consistent_payload):
 # ==========================
 def test_r3_accuracy(openai_client):
     moe_layer_num = 45  # GLM45 AIR moe layer num: 45
-    test_routing_replay_chat_completion(
+    check_routing_replay_chat_completion(
         openai_client=openai_client, moe_layer_num=moe_layer_num, model_name="glm45air"
     )

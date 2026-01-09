@@ -1,4 +1,5 @@
 import os
+import shutil
 import time
 
 import paddle
@@ -119,10 +120,10 @@ def generated_base_line_routing_index(openai_client, cur_save_routing_path, base
     wait_for_file(nonstream_cur_save_routing_path)
 
     # Move the baseline to the routing_replay_output_baseline folder
-    # stream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_stream")
-    # nonstream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_nonstream")
-    # shutil.move(stream_cur_save_routing_path, stream_baseline_path)
-    # shutil.move(nonstream_cur_save_routing_path, nonstream_baseline_path)
+    stream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_stream")
+    nonstream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_nonstream")
+    shutil.move(stream_cur_save_routing_path, stream_baseline_path)
+    shutil.move(nonstream_cur_save_routing_path, nonstream_baseline_path)
 
 
 def wait_for_file(file_path, timeout=20, check_interval=0.1):
@@ -143,21 +144,22 @@ def wait_for_file(file_path, timeout=20, check_interval=0.1):
         time.sleep(sleep_time)
 
 
-def test_routing_replay_chat_completion(openai_client, moe_layer_num: int, model_name: str):
+def check_routing_replay_chat_completion(openai_client, moe_layer_num: int, model_name: str):
     """Test rollout routing replay chat completion"""
     cur_save_routing_path = f"./R3_tmp/routing_replay_output_{model_name}/"
     model_path = os.getenv("MODEL_PATH")
     if model_path:
-        baseline_path = os.path.join(model_path, f"/routing_replay_output_baseline_{model_name}")
+        baseline_path = os.path.join(model_path, f"R3_BaseLine/routing_replay_output_baseline_{model_name}")
     else:
         baseline_path = f"./R3_BaseLine/routing_replay_output_baseline_{model_name}"
     stream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_stream")
+
     nonstream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_nonstream")
 
     # Maybe need to generate baseline routing index
     if not os.path.exists(stream_baseline_path) or not os.path.exists(nonstream_baseline_path):
         generated_base_line_routing_index(openai_client, cur_save_routing_path, baseline_path)
-        raise FileNotFoundError(f"Not find the R3 baseline file {nonstream_baseline_path} or {stream_baseline_path}.")
+        raise FileNotFoundError(f"Not find the R3 baseline file {nonstream_baseline_path} or {stream_baseline_path} .")
 
     routing_layer_num_1 = len(os.listdir(stream_baseline_path))
     routing_layer_num_2 = len(os.listdir(nonstream_baseline_path))

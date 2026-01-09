@@ -257,11 +257,11 @@ class RoutingReplayManager:
 
         request_id: "chatcmpl-request.user-uuid"
         rollout_id: "request.user"
-            example: "chatcmpl-xxx_xxx_epoch_15:2:2:1-uuid" -> "xxx_xxx_epoch_15:2:2:1"
+            example: "chatcmpl-xxx_xxx_epoch_15:2:2:1-d9f16c5c-65f6-4815-b44d-14e2c581907c_0" -> "xxx_xxx_epoch_15:2:2:1"
         """
         chat_type, tmp_str = request_id.split("-", 1)
         # NOTE(gongshaotian): only support chatcmpl now
-        # assert chat_type == "chatcmpl"
+        assert chat_type == "chatcmpl", "Rollout Routing Replay only supports chatcmpl"
         reversed_tmp_str = tmp_str[::-1].split("-", 5)
         rollout_id = reversed_tmp_str[-1][::-1]
         return rollout_id
