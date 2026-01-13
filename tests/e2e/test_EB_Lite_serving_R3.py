@@ -60,7 +60,7 @@ def setup_and_run_server():
         "--max-num-seqs",
         "1",
         "--quantization",
-        "block_wise_fp8",
+        "wint4",
         "--graph-optimization-config",
         '{"use_cudagraph":true}',
         "--routing-replay-config",

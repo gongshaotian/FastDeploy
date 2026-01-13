@@ -78,6 +78,7 @@ def send_r3_streaming_chat(openai_client, user_id: str = ""):
         temperature=1,
         top_p=0,
         max_tokens=1024,
+        seed=13,
         stream=True,
         user=user_id,  # "r3_chat_completion_stream_test",
     )
@@ -99,6 +100,7 @@ def send_r3_non_streaming_chat(openai_client, user_id: str = ""):
         temperature=1,
         top_p=0,
         max_tokens=1024,
+        seed=13,
         stream=False,
         user=user_id,  # "rollout_routing_replay_chat_completion_nonstream_test"
     )
