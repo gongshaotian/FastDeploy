@@ -1734,7 +1734,7 @@ class FDConfig:
         calculate some parameters
         """
         #  Unified field model config
-        if self.model_config.first_k_dense_replace is not None:
+        if self.model_config.architectures[0] == "Glm4MoeForCausalLM":
             # The first moe layer id of GLM4.5 model
             self.model_config.moe_layer_start_index = self.model_config.first_k_dense_replace
 

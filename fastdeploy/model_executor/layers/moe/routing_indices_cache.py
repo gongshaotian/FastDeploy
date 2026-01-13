@@ -178,13 +178,13 @@ class RoutingReplayManager:
             batch_id: The batch ID of this request
             request_id: The global ID of the request is usually executed by the training process in RL
         """
-        logger.info(f"[R3] Regist request {request_id}.")
         # Save requests that have been finished for the current slot
         if batch_id in self.routing_batch_to_request:
             pre_request_id = self._deregister_request(batch_id)
             asyncio.run(self._put_request_to_store(batch_id, pre_request_id))
         # Register the new request
         self.routing_batch_to_request[batch_id] = request_id
+        logger.info(f"[R3] Register request {request_id} with batch id {batch_id}")
 
     def _deregister_request(self, batch_id: int) -> str:
         """
