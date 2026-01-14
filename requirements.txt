@@ -45,4 +45,5 @@ einops
 setproctitle
 aistudio_sdk
 p2pstore
+py-cpuinfo
 flashinfer-python-paddle
