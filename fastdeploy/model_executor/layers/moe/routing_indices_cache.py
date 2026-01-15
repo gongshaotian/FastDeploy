@@ -168,7 +168,7 @@ class RoutingReplayManager:
         self.routing_replay_table = paddle.full(
             shape=[self.max_num_seqs, self.num_moe_layers, self.max_model_len, self.moe_top_k],
             fill_value=-1,
-            dtype="uint8",
+            dtype="int32",
         )
 
     def register_request(self, batch_id: int, request_id: str):
