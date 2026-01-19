@@ -206,7 +206,7 @@ class RoutingReplayManager:
 
             tasks = []
             if self.use_fused_put:
-                tasks.append(self.routing_store.use_fused_put(routing_indices=batch_buffer, rollout_id=rollout_id))
+                tasks.append(self.routing_store.fused_put(routing_indices=batch_buffer, rollout_id=rollout_id))
             else:
                 for layer_id in range(self.num_moe_layers):
                     layer_buffer = batch_buffer[layer_id]
@@ -365,7 +365,7 @@ class RoutingStoreLocal(RoutingStoreBase):
 
         # async put
         time_before_put = time.perf_counter()
-        file_path = os.path.join(self.local_store_dir, routing_key)
+        file_path = os.path.join(self.local_store_dir, f"{routing_key}.pdtensor")
         paddle.save(routing_indices, file_path)
         logger.info(f"[R3] The routing key {routing_key} put cost is {time.perf_counter()-time_before_put}s")
 
@@ -400,9 +400,7 @@ class RoutingStoreLocal(RoutingStoreBase):
     def clear_store(self):
         """Clear the routing indices store"""
         if os.path.isdir(self.local_store_dir):
-            for file_name in os.listdir(self.local_store_dir):
-                file_path = os.path.join(self.local_store_dir, file_name)
-                shutil.rmtree(file_path)
+            shutil.rmtree(self.local_store_dir)
 
     async def clear_prefix_batch(self, roullout_id_prefixes: List[str]):
         # async delete
