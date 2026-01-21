@@ -166,11 +166,33 @@ class RoutingReplayManager:
 
         self.routing_store = get_routing_store(fd_config=fd_config)
         self.routing_batch_to_request: Dict[int, str] = {}
+
+        num_experts = fd_config.model_config.moe_num_experts + fd_config.model_config.moe_num_shared_experts
+        dtype = self.get_routing_dtype(num_experts=num_experts)
         self.routing_replay_table = paddle.full(
             shape=[self.max_num_seqs, self.num_moe_layers, self.max_model_len, self.moe_top_k],
             fill_value=-1,
-            dtype="int32",
+            dtype=dtype,
         )
+
+    def get_routing_dtype(self, num_experts: int, reserved_fill_value: int = 1) -> str:
+        """Calculate the minimum number of bits required for storage routing."""
+        if num_experts <= 0:
+            raise ValueError(f"num_experts must be greater than 0 but got {num_experts}, please check model config.")
+        dtype = "uint8"
+        total_number = num_experts + reserved_fill_value
+        if total_number <= 255:  # uint8: 0~255
+            dtype = "uint8"
+        elif total_number <= 65535:  # uint16: 0~65,535
+            dtype = "uint16"
+        elif total_number <= 4294967295:  # uint32: 0~4,294,967,295
+            dtype = "uint32"
+        else:
+            raise ValueError(
+                f"The number of experts {num_experts} exceeds the representation range of uint32, please check model config."
+            )
+        logger.info(f"[R3] Routing replay table dtype: {dtype}")
+        return dtype
 
     def register_request(self, batch_id: int, request_id: str):
         """
