@@ -53,6 +53,10 @@ from fastdeploy.model_executor.layers.sample.meta_data import SamplingMetadata
 from fastdeploy.model_executor.layers.sample.sampler import Sampler, SpeculativeSampler
 from fastdeploy.model_executor.model_loader import get_model_loader
 from fastdeploy.platforms import current_platform
+from fastdeploy.worker.block_table_utils import (
+    compute_slot_mapping,
+    get_token_positions,
+)
 
 if current_platform.is_iluvatar():
     from fastdeploy.model_executor.ops.iluvatar import (
@@ -577,10 +581,6 @@ class GPUModelRunner(ModelRunnerBase):
         req_dict: A list of Request dict
         num_running_requests: batch_size
         """
-        # NOTE(luotingdan): Lazy initialize kv cache
-        if "caches" not in self.share_inputs:
-            self.initialize_kv_cache()
-
         req_len = len(req_dicts)
         has_prefill_task = False
         has_decode_task = False
@@ -1409,6 +1409,8 @@ class GPUModelRunner(ModelRunnerBase):
         # NOTE: (changwenbin) Initialized to max_num_seq '-1' before copying, marking illegal positions
         self.share_inputs["batch_id_per_token"][:] = -1
         self.share_inputs["batch_id_per_token"].copy_(batch_id_per_token, False)
+        logger.info(f"{self.share_inputs['ids_remove_padding']}")
+        logger.info(f"{self.share_inputs['batch_id_per_token']}")
         self.share_inputs["cu_seqlens_q"].copy_(cu_seqlens_q, False)
         self.share_inputs["cu_seqlens_k"].copy_(cu_seqlens_k, False)
 
@@ -1419,6 +1421,13 @@ class GPUModelRunner(ModelRunnerBase):
 
         # Update bad tokens len
         max_bad_tokens_len = np.max(self.share_inputs["bad_tokens_len"].numpy())
+        logger.info(f"block_tables before get_token_positions : {self.share_inputs['block_tables']}")
+        self.positions = get_token_positions(
+            seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
+            seq_lens_this_time=self.seq_lens_this_time_buffer,
+            max_num_seqs=self.scheduler_config.max_num_seqs,
+        )
+        logger.info(f"positions {self.positions}")
 
         # Initialize forward meta data
         self.initialize_forward_meta(is_dummy_or_profile_run=is_dummy_or_profile_run)
@@ -1594,10 +1603,6 @@ class GPUModelRunner(ModelRunnerBase):
 
         logger.info(f"Initializing kv cache for all layers. {cache_ready_signal.value}")
         cache_kvs_list = []
-
-        # NOTE:(changwenbin) Determine whether it is Multi-Head Latent Attention,
-        # To rationalize the allocation of kvcache.
-        from fastdeploy import envs
 
         self.mla_cache = envs.FD_ATTENTION_BACKEND == "MLA_ATTN"
         for i in range(self.model_config.num_hidden_layers):
@@ -2483,12 +2488,29 @@ class GPUModelRunner(ModelRunnerBase):
 
         # Routing replay
         if self.fd_config.routing_replay_config.enable_routing_replay:
+            # Update host cache
+            logger.info(f"block_tables before compute_slot_mapping : {self.share_inputs['block_tables']}")
+            slot_mapping = compute_slot_mapping(
+                block_table=self.share_inputs["block_tables"],
+                positions=self.positions,
+                block_size=self.cache_config.block_size,
+            )
+            self.routing_replay_manager.update_host_cache(positions=self.positions, slot_mapping=slot_mapping)
+
+            # query -> query_token_idx -> _inner_block_token_id
+
             if (
                 not self.exist_prefill()
                 and not self.exist_decode()
                 and self.share_inputs["is_block_step"].sum() == 0
                 and self.share_inputs["is_chunk_step"].sum() == 0
             ):
+                # Get the mapping from tokens to blocks id
+                # batch_id(request_id) -> query_token_idx -> _inner_block_token_id
+
+                # Gollective all routing of finished requests
+
+                # Put routing of finished requests to store
                 self.routing_replay_manager.put_table_to_store()
             return None
 

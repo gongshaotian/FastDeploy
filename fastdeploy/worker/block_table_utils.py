@@ -1,0 +1,34 @@
+import numpy as np
+import paddle
+
+
+def get_token_positions(seq_lens_decoder: paddle.Tensor, seq_lens_this_time: paddle.Tensor, max_num_seqs: int):
+    """Get token position of each sequence in a batch."""
+    print("seq_lens_decoder", seq_lens_decoder)
+    print("seq_lens_this_time", seq_lens_this_time)
+    starts = seq_lens_decoder.numpy()[:, 0]
+    increase_num = seq_lens_this_time.numpy()[:, 0]
+
+    positions = []
+    for i in range(max_num_seqs):
+        if seq_lens_this_time[i] == 0:
+            positions.append([])
+            continue
+        repeated_base = np.repeat(starts[i], increase_num[i])
+        positions.append(list(repeated_base + np.arange(1, increase_num[i] + 1)))
+
+    return positions
+
+
+def compute_slot_mapping(block_table, positions: np.ndarray, block_size: int = 64):
+    """ """
+    slot_mapping = []
+    for batch_id, position in enumerate(positions):
+        block_table_indices = (position + block_size - 1) // block_size
+        token_block_ids = block_table[batch_id, block_table_indices]
+        block_offset = position % block_size
+
+        token_cache_ids = token_block_ids * block_size + block_offset
+        slot_mapping.append(token_cache_ids)
+
+    return slot_mapping

@@ -152,7 +152,6 @@ class RoutingReplayManager:
         self,
         fd_config: FDConfig,
     ):
-        self.fd_config = fd_config
         self.max_num_seqs = fd_config.scheduler_config.max_num_seqs
         self.max_model_len = fd_config.model_config.max_model_len
         self.num_moe_layers = fd_config.model_config.num_hidden_layers - fd_config.model_config.moe_layer_start_index
@@ -166,41 +165,11 @@ class RoutingReplayManager:
 
         self.routing_store = get_routing_store(fd_config=fd_config)
         self.routing_batch_to_request: Dict[int, str] = {}
-
-        self._init_routing_cache(dtype="uint8")
-
-    def _init_routing_cache(self, dtype: str):
-        """Initialize the device buffer and host buffer."""
-
-        max_num_kv_tokens = self.fd_config.cache_config.total_block_num * self.fd_config.cache_config.block_size
-
-        self._host_cache = paddle.full(
-            shape=[max_num_kv_tokens, self.num_moe_layers, self.moe_top_k], fill_value=-1, dtype=dtype, device="cpu"
-        )
-
         self.routing_replay_table = paddle.full(
             shape=[self.max_num_seqs, self.num_moe_layers, self.max_model_len, self.moe_top_k],
             fill_value=-1,
             dtype="int32",
         )
-
-        # self._device_cache = paddle.full(
-        #     shape=[self.fd_config.scheduler_config.max_num_batched_tokens, self.num_moe_layers, self.moe_top_k],
-        #     fill_value=-1,
-        #     dtype=dtype,
-        #     device="gpu",
-        # )
-
-    def update_host_cache(self, positions: paddle.Tensor, slot_mapping: paddle.Tensor):
-        """ """
-
-        for batch_id, position in enumerate(positions):
-            if position is not None:
-                routing_ids = self.routing_replay_table[batch_id, :, position, :]
-                # reshape [a, b, c] -> [b, a, c]
-                routing_ids = routing_ids.transpose([1, 0, 2])
-
-                self._host_cache[slot_mapping[batch_id], :, :] = routing_ids
 
     def register_request(self, batch_id: int, request_id: str):
         """
