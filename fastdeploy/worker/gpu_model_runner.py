@@ -53,10 +53,6 @@ from fastdeploy.model_executor.layers.sample.meta_data import SamplingMetadata
 from fastdeploy.model_executor.layers.sample.sampler import Sampler, SpeculativeSampler
 from fastdeploy.model_executor.model_loader import get_model_loader
 from fastdeploy.platforms import current_platform
-from fastdeploy.worker.block_table_utils import (
-    compute_slot_mapping,
-    get_token_positions,
-)
 
 if current_platform.is_iluvatar():
     from fastdeploy.model_executor.ops.iluvatar import (
@@ -224,8 +220,7 @@ class GPUModelRunner(ModelRunnerBase):
         self.routing_replay_manager = None
         if self.fd_config.routing_replay_config.enable_routing_replay:
             self.routing_replay_manager = RoutingReplayManager(
-                fd_config=self.fd_config,
-                block_table = self.share_inputs["block_tables"]
+                fd_config=self.fd_config, block_table=self.share_inputs["block_tables"]
             )
 
         self.zmq_client = None
@@ -686,13 +681,19 @@ class GPUModelRunner(ModelRunnerBase):
 
                 # Routing Replay
                 if self.fd_config.routing_replay_config.enable_routing_replay:
-                    if prefill_start_index == 0:
-                        self.routing_replay_manager.register_request(
-                            batch_id=idx, 
-                            request_id=request.request_id,
-                            seq_lens_decoder=self.share_inputs["seq_lens_decoder"], 
-                            seq_lens_this_time=self.seq_lens_this_time_buffer
-                        )
+                    # if prefill_start_index == 0:
+                    # self.routing_replay_manager.register_request(
+                    #     batch_id=idx,
+                    #     request_id=request.request_id,
+                    #     seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
+                    #     seq_lens_this_time=self.seq_lens_this_time_buffer
+                    # )
+                    self.routing_replay_manager.register_request(
+                        batch_id=idx,
+                        request_id=request.request_id,
+                        seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
+                        seq_lens_this_time=self.seq_lens_this_time_buffer,
+                    )
 
                 if (
                     self.fd_config.scheduler_config.splitwise_role == "decode"
@@ -708,6 +709,20 @@ class GPUModelRunner(ModelRunnerBase):
                 )
                 if self.share_inputs["is_block_step"][idx]:  # has tasks to continue to decode
                     has_decode_task = True
+
+                # Routing Replay
+                logger.info(f"[R3] self.share_inputs['is_block_step'][idx] {self.share_inputs['is_block_step'][idx]}")
+                logger.info(f"[R3] self.seq_lens_decoder[idx] {self.seq_lens_routing_buffer[idx]}")
+                if (
+                    self.fd_config.routing_replay_config.enable_routing_replay
+                    and self.seq_lens_routing_buffer[idx][0] == 0
+                ):  # new decode task
+                    self.routing_replay_manager.register_request(
+                        batch_id=idx,
+                        request_id=request.request_id,
+                        seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
+                        seq_lens_this_time=self.seq_lens_this_time_buffer,
+                    )
                 continue
             else:  # preempted task
                 logger.info(f"Handle preempted request {request} at idx {idx}")
@@ -1431,7 +1446,9 @@ class GPUModelRunner(ModelRunnerBase):
         # Update bad tokens len
         max_bad_tokens_len = np.max(self.share_inputs["bad_tokens_len"].numpy())
         logger.info(f"block_tables before get_token_positions : {self.share_inputs['block_tables']}")
-        self.positions = self.routing_replay_manager.get_token_positions(seq_lens_decoder=self.share_inputs["seq_lens_decoder"], seq_lens_this_time=self.seq_lens_this_time_buffer)
+        self.positions = self.routing_replay_manager.get_token_positions(
+            seq_lens_decoder=self.share_inputs["seq_lens_decoder"], seq_lens_this_time=self.seq_lens_this_time_buffer
+        )
         logger.info(f"positions {self.positions}")
 
         # Initialize forward meta data
@@ -2272,7 +2289,6 @@ class GPUModelRunner(ModelRunnerBase):
 
         prompt_logprobs_list = self._get_prompt_logprobs_list(model_output)
         logger.info(f"berfore update input {self.share_inputs['seq_lens_decoder']} {self.seq_lens_this_time_buffer}")
-        
 
         if self.is_pooling_model:
             pooler_output = self._pool(model_output, num_running_requests)
@@ -2433,9 +2449,6 @@ class GPUModelRunner(ModelRunnerBase):
             else:
                 skip_save_output = False
 
-        
-
-
             post_process(
                 sampler_or_pooler_output=sampler_output,
                 model_output=model_output_data,
@@ -2500,8 +2513,7 @@ class GPUModelRunner(ModelRunnerBase):
         if self.fd_config.routing_replay_config.enable_routing_replay:
             # Update host cache
             logger.info(f"block_tables before compute_slot_mapping : {self.share_inputs['block_tables']}")
-            slot_mapping = self.routing_replay_manager.compute_slot_mapping(
-                positions=self.positions)
+            slot_mapping = self.routing_replay_manager.compute_slot_mapping(positions=self.positions)
             self.routing_replay_manager.update_host_cache(positions=self.positions, slot_mapping=slot_mapping)
 
             # query -> query_token_idx -> _inner_block_token_id
@@ -2512,29 +2524,34 @@ class GPUModelRunner(ModelRunnerBase):
             #     and self.share_inputs["is_block_step"].sum() == 0
             #     and self.share_inputs["is_chunk_step"].sum() == 0
             # ):
-                # Get the mapping from tokens to blocks id
-                # batch_id(request_id) -> query_token_idx -> _inner_block_token_id
+            # Get the mapping from tokens to blocks id
+            # batch_id(request_id) -> query_token_idx -> _inner_block_token_id
 
-                # Gollective all routing of finished requests
+            # Gollective all routing of finished requests
 
-                # Put routing of finished requests to store
-            logger.info(f"berfore put to store {self.share_inputs['seq_lens_decoder']} {self.seq_lens_this_time_buffer}")
-                # self.routing_replay_manager.put_table_to_store(seq_lens_decoder=self.seq_lens_routing_buffer, seq_lens_this_time=self.seq_lens_this_time_buffer)
-            logger.info(f"is_block_step :{self.share_inputs['is_block_step']} is_chunk_step:{self.share_inputs['is_chunk_step']}")
+            # Put routing of finished requests to store
+            logger.info(
+                f"berfore put to store {self.share_inputs['seq_lens_decoder']} {self.seq_lens_this_time_buffer}"
+            )
+            # self.routing_replay_manager.put_table_to_store(seq_lens_decoder=self.seq_lens_routing_buffer, seq_lens_this_time=self.seq_lens_this_time_buffer)
+            logger.info(
+                f"is_block_step :{self.share_inputs['is_block_step']} is_chunk_step:{self.share_inputs['is_chunk_step']}"
+            )
             logger.info(f"stop_flags: {self.share_inputs['stop_flags']}")
-            is_empty_batch = paddle.equal(self.seq_lens_routing_buffer[:, 0], 0)
+            is_empty_batch = paddle.equal(self.seq_lens_routing_buffer[:, 0], 0)  # 1.empty batch 2. preempted request
             not_block_chunk_empty = paddle.logical_not(
                 paddle.logical_or(
                     is_empty_batch,
-                    paddle.logical_or(
-                        self.share_inputs["is_block_step"], 
-                        self.share_inputs["is_chunk_step"]
-                    )
+                    paddle.logical_or(self.share_inputs["is_block_step"], self.share_inputs["is_chunk_step"]),
                 )
             )
             logger.info(f"not_block_chunk_empty: {not_block_chunk_empty}")
             finished_batch_ids = paddle.logical_and(self.share_inputs["stop_flags"][:, 0], not_block_chunk_empty)
-            self.routing_replay_manager.put_finished_batch(finished_batch_ids=finished_batch_ids, seq_lens_decoder=self.seq_lens_routing_buffer, seq_lens_this_time=self.seq_lens_this_time_buffer)
+            self.routing_replay_manager.put_finished_batch(
+                finished_batch_ids=finished_batch_ids,
+                seq_lens_decoder=self.seq_lens_routing_buffer,
+                seq_lens_this_time=self.seq_lens_this_time_buffer,
+            )
             self.seq_lens_routing_buffer.copy_(self.share_inputs["seq_lens_decoder"])
             return None
 
