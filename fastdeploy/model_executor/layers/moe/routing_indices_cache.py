@@ -193,14 +193,17 @@ class RoutingReplayManager:
 
     def update_host_cache(self, positions: paddle.Tensor, slot_mapping: paddle.Tensor):
         """ """
-
+        logger.info("[R3] Update host cache.")
         for batch_id, position in enumerate(positions):
-            if position is not None:
+            if len(position) > 0 and len(slot_mapping[batch_id]) > 0:
+                logger.info(f"position: {position}, slot mapping: {slot_mapping[batch_id]}")
                 routing_ids = self.routing_replay_table[batch_id, :, position, :]
+                logger.info(f"routing_ids: {routing_ids}")
                 # reshape [a, b, c] -> [b, a, c]
                 routing_ids = routing_ids.transpose([1, 0, 2])
-
+                logger.info(f"after transpose routing ids: {routing_ids}")
                 self._host_cache[slot_mapping[batch_id], :, :] = routing_ids
+                logger.info(f" update host cache: {self._host_cache[slot_mapping[batch_id], :, :]}")
 
     def register_request(self, batch_id: int, request_id: str):
         """
@@ -376,6 +379,7 @@ class RoutingStoreLocal(RoutingStoreBase):
         dir_path = os.path.join(self.local_store_dir, f"{rollout_id}")
         os.makedirs(dir_path, exist_ok=True)
         file_path = os.path.join(dir_path, f"layer_{layer_idx}.pdtensor")
+        logger.info(f"[R3] The routing key {routing_key} routing value {routing_indices}")
         paddle.save(routing_indices, file_path)
         logger.info(f"[R3] The routing key {routing_key} put cost is {time.perf_counter()-time_before_put}s")
 
