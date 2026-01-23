@@ -2506,21 +2506,35 @@ class GPUModelRunner(ModelRunnerBase):
 
             # query -> query_token_idx -> _inner_block_token_id
 
-            if (
-                not self.exist_prefill()
-                and not self.exist_decode()
-                and self.share_inputs["is_block_step"].sum() == 0
-                and self.share_inputs["is_chunk_step"].sum() == 0
-            ):
+            # if (
+            #     not self.exist_prefill()
+            #     and not self.exist_decode()
+            #     and self.share_inputs["is_block_step"].sum() == 0
+            #     and self.share_inputs["is_chunk_step"].sum() == 0
+            # ):
                 # Get the mapping from tokens to blocks id
                 # batch_id(request_id) -> query_token_idx -> _inner_block_token_id
 
                 # Gollective all routing of finished requests
 
                 # Put routing of finished requests to store
-                logger.info(f"berfore put to store {self.share_inputs['seq_lens_decoder']} {self.seq_lens_this_time_buffer}")
-                self.routing_replay_manager.put_table_to_store(seq_lens_decoder=self.seq_lens_routing_buffer, seq_lens_this_time=self.seq_lens_this_time_buffer)
-            
+            logger.info(f"berfore put to store {self.share_inputs['seq_lens_decoder']} {self.seq_lens_this_time_buffer}")
+                # self.routing_replay_manager.put_table_to_store(seq_lens_decoder=self.seq_lens_routing_buffer, seq_lens_this_time=self.seq_lens_this_time_buffer)
+            logger.info(f"is_block_step :{self.share_inputs['is_block_step']} is_chunk_step:{self.share_inputs['is_chunk_step']}")
+            logger.info(f"stop_flags: {self.share_inputs['stop_flags']}")
+            is_empty_batch = paddle.equal(self.seq_lens_routing_buffer[:, 0], 0)
+            not_block_chunk_empty = paddle.logical_not(
+                paddle.logical_or(
+                    is_empty_batch,
+                    paddle.logical_or(
+                        self.share_inputs["is_block_step"], 
+                        self.share_inputs["is_chunk_step"]
+                    )
+                )
+            )
+            logger.info(f"not_block_chunk_empty: {not_block_chunk_empty}")
+            finished_batch_ids = paddle.logical_and(self.share_inputs["stop_flags"][:, 0], not_block_chunk_empty)
+            self.routing_replay_manager.put_finished_batch(finished_batch_ids=finished_batch_ids, seq_lens_decoder=self.seq_lens_routing_buffer, seq_lens_this_time=self.seq_lens_this_time_buffer)
             self.seq_lens_routing_buffer.copy_(self.share_inputs["seq_lens_decoder"])
             return None
 
@@ -2714,8 +2728,8 @@ class GPUModelRunner(ModelRunnerBase):
         self.in_progress_prompt_logprobs.clear()
         self.forward_batch_reqs_list = [None for _ in range(self.scheduler_config.max_num_seqs)]
 
-        if self.fd_config.routing_replay_config.enable_routing_replay:
-            self.routing_replay_manager.put_table_to_store(seq_lens_decoder=self.share_inputs["seq_lens_decoder"], seq_lens_this_time=self.seq_lens_this_time_buffer)
+        # if self.fd_config.routing_replay_config.enable_routing_replay:
+        #     self.routing_replay_manager.put_table_to_store(seq_lens_decoder=self.share_inputs["seq_lens_decoder"], seq_lens_this_time=self.seq_lens_this_time_buffer)
 
     def update_parameters(self, pid):
         """Dynamic model loader use to update parameters use for RL"""

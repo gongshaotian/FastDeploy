@@ -263,30 +263,52 @@ class RoutingReplayManager:
                 return token_cached_routing.transpose([1, 0, 2])
         raise ValueError("No cached routing found")
 
+    def put_finished_batch(
+        self,
+        finished_batch_ids,
+        seq_lens_decoder,
+        seq_lens_this_time,
+    ):
+        logger.info(f"[R3] put_finished_batch {finished_batch_ids}")
+        for batch_id, finished in enumerate(finished_batch_ids):
+            if finished:
+                assert batch_id in self.routing_batch_to_request
+                request_id = self._deregister_request(batch_id)
+                asyncio.run(
+                    self._put_request_to_store(
+                        batch_id=batch_id, 
+                        request_id=request_id,
+                        seq_lens_decoder=seq_lens_decoder, 
+                        seq_lens_this_time=seq_lens_this_time
+                    )
+                )
+                
+
     def register_request(
-            self, 
-            batch_id: int, 
-            request_id: str,
-            seq_lens_decoder,
-            seq_lens_this_time
-        ):
+        self, 
+        batch_id: int, 
+        request_id: str,
+        seq_lens_decoder,
+        seq_lens_this_time
+    ):
         """
         Register a new request to routing replay table
         Args:
             batch_id: The batch ID of this request
             request_id: The global ID of the request is usually executed by the training process in RL
         """
-        # Save requests that have been finished for the current slot
-        if batch_id in self.routing_batch_to_request:
-            pre_request_id = self._deregister_request(batch_id)
-            asyncio.run(
-                self._put_request_to_store(
-                    batch_id=batch_id, 
-                    request_id=pre_request_id, 
-                    seq_lens_decoder=seq_lens_decoder, 
-                    seq_lens_this_time=seq_lens_this_time
-                )
-            )
+        # # Save requests that have been finished for the current slot
+        # if batch_id in self.routing_batch_to_request:
+        #     pre_request_id = self._deregister_request(batch_id)
+        #     asyncio.run(
+        #         self._put_request_to_store(
+        #             batch_id=batch_id, 
+        #             request_id=pre_request_id, 
+        #             seq_lens_decoder=seq_lens_decoder, 
+        #             seq_lens_this_time=seq_lens_this_time
+        #         )
+        #     )
+        assert batch_id not in self.routing_batch_to_request
         # Register the new request
         self.routing_batch_to_request[batch_id] = request_id
         logger.info(f"[R3] Register request {request_id} with batch id {batch_id}")
