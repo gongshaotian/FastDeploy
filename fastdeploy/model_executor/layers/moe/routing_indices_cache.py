@@ -20,6 +20,7 @@ import os
 import shutil
 import time
 from abc import ABC, abstractmethod
+import numpy as np
 from typing import Dict, List, Optional
 
 import paddle
@@ -151,6 +152,7 @@ class RoutingReplayManager:
     def __init__(
         self,
         fd_config: FDConfig,
+        block_table
     ):
         self.fd_config = fd_config
         self.max_num_seqs = fd_config.scheduler_config.max_num_seqs
@@ -169,6 +171,8 @@ class RoutingReplayManager:
 
         self._init_routing_cache(dtype="uint8")
 
+        self.block_table = block_table
+
     def _init_routing_cache(self, dtype: str):
         """Initialize the device buffer and host buffer."""
 
@@ -184,13 +188,6 @@ class RoutingReplayManager:
             dtype="int32",
         )
 
-        # self._device_cache = paddle.full(
-        #     shape=[self.fd_config.scheduler_config.max_num_batched_tokens, self.num_moe_layers, self.moe_top_k],
-        #     fill_value=-1,
-        #     dtype=dtype,
-        #     device="gpu",
-        # )
-
     def update_host_cache(self, positions: paddle.Tensor, slot_mapping: paddle.Tensor):
         """ """
         logger.info("[R3] Update host cache.")
@@ -199,11 +196,68 @@ class RoutingReplayManager:
                 logger.info(f"position: {position}, slot mapping: {slot_mapping[batch_id]}")
                 routing_ids = self.routing_replay_table[batch_id, :, position, :]
                 logger.info(f"routing_ids: {routing_ids}")
-                # reshape [a, b, c] -> [b, a, c]
+                # Reshape [layer, token, topk] -> [token, layer, topk]
                 routing_ids = routing_ids.transpose([1, 0, 2])
                 logger.info(f"after transpose routing ids: {routing_ids}")
                 self._host_cache[slot_mapping[batch_id], :, :] = routing_ids
                 logger.info(f" update host cache: {self._host_cache[slot_mapping[batch_id], :, :]}")
+
+    def get_token_positions(self, seq_lens_decoder, seq_lens_this_time):
+        """Get token position of each sequence in a batch."""
+        print("seq_lens_decoder", seq_lens_decoder)
+        print("seq_lens_this_time", seq_lens_this_time)
+        starts = seq_lens_decoder.numpy()[:, 0]
+        increase_num = seq_lens_this_time.numpy()[:, 0]
+
+        positions = []
+        for i in range(self.max_num_seqs):
+            if seq_lens_this_time[i] == 0:
+                positions.append([])
+                continue
+            repeated_base = np.repeat(starts[i], increase_num[i])
+            positions.append(repeated_base + np.arange(0, increase_num[i]))
+
+        return positions
+
+    def compute_slot_mapping(self, positions: np.ndarray):
+        """ """
+        slot_mapping = []
+        for batch_id, position in enumerate(positions):
+            print("position", position)
+            if len(position) == 0:
+                slot_mapping.append([])
+                continue
+            block_table_indices = position // self.fd_config.cache_config.block_size
+            print("block_table_indices", block_table_indices)
+            token_block_ids = self.block_table[batch_id, block_table_indices]
+            block_offset = position % self.fd_config.cache_config.block_size
+
+            token_cache_ids = np.array(token_block_ids) * self.fd_config.cache_config.block_size + block_offset
+            slot_mapping.append(token_cache_ids)
+
+        print("slot_mapping", slot_mapping)
+        return slot_mapping
+
+    def _get_request_cache_ids(self, finished_batch_ids, seq_lens_decoder, seq_lens_this_time):
+        """ 
+        1. finish the step: after update input
+        2. clear parameter: after update input """
+        current_token_nums = seq_lens_decoder.numpy()[:, 0] + seq_lens_this_time.numpy()[:, 0]
+        print(f"{seq_lens_decoder} {seq_lens_this_time}")
+        print("current_token_nums", current_token_nums)
+        positions = []
+        for batch_id in range(self.max_num_seqs):
+            position = []
+            if batch_id in finished_batch_ids:
+                position = np.arange(0, current_token_nums[batch_id])
+            positions.append(position)
+
+        return self.compute_slot_mapping(positions=positions)
+
+    def _get_routing_from_cache(self, token_cache_ids):
+        """Collection the cached routing information"""
+        token_cached_routing = self._host_cache[token_cache_ids, :, :]
+        return token_cached_routing.transpose([1, 0, 2])
 
     def register_request(self, batch_id: int, request_id: str):
         """
@@ -234,7 +288,13 @@ class RoutingReplayManager:
     ):
         before_put_request_time = time.perf_counter()
         if self.tp_rank == 0:
-            batch_buffer = self.routing_replay_table[batch_id]
+            batch_buffe_old = self.routing_replay_table[batch_id]
+            logger.info(f"batch id {batch_id}, request id {request_id}")
+            slot_mapping = self._get_request_cache_ids([batch_id])
+            logger.info(f"slot_mapping {slot_mapping}")
+            batch_buffer = self._get_routing_from_cache(token_cache_ids=slot_mapping)
+            logger.info(f"batch_buffer {batch_buffer} batch_buffe_old {batch_buffe_old}")
+            logger.info(f"batch_buffer_old equal batch_buffer{paddle.allclose(batch_buffe_old, batch_buffer)}")
             tasks = []
             for layer_id in range(self.num_moe_layers):
                 layer_buffer = batch_buffer[layer_id]

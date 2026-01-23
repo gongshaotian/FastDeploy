@@ -15,7 +15,7 @@ def get_token_positions(seq_lens_decoder: paddle.Tensor, seq_lens_this_time: pad
             positions.append([])
             continue
         repeated_base = np.repeat(starts[i], increase_num[i])
-        positions.append(repeated_base + np.arange(0, increase_num[i]))  # + 1
+        positions.append(repeated_base + np.arange(0, increase_num[i]))
 
     return positions
 
@@ -38,3 +38,17 @@ def compute_slot_mapping(block_table, positions: np.ndarray, block_size: int = 6
 
     print("slot_mapping", slot_mapping)
     return slot_mapping
+
+
+def get_token_cache_ids(finished_batch_ids, seq_lens_decoder, seq_lens_this_time, block_table, block_size: int = 64):
+    """ """
+    current_token_nums = seq_lens_decoder.numpy()[:, 0] + seq_lens_this_time.numpy()[:, 0]
+
+    positions = []
+    for batch_id in range(len(seq_lens_decoder)):
+        position = []
+        if batch_id in finished_batch_ids:
+            position = np.arange(0, current_token_nums[batch_id])
+        positions.append(position)
+
+    return compute_slot_mapping(block_table=block_table, positions=positions, block_size=block_size)

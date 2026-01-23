@@ -223,7 +223,12 @@ class GPUModelRunner(ModelRunnerBase):
         # Rollout routing replay config
         self.routing_replay_manager = None
         if self.fd_config.routing_replay_config.enable_routing_replay:
-            self.routing_replay_manager = RoutingReplayManager(fd_config=self.fd_config)
+            self.routing_replay_manager = RoutingReplayManager(
+                fd_config=self.fd_config,
+                seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
+                seq_lens_this_time=self.seq_lens_this_time_buffer,
+                block_table = self.share_inputs["block_tables"]
+            )
 
         self.zmq_client = None
         self.async_output_queue = None
@@ -1422,11 +1427,7 @@ class GPUModelRunner(ModelRunnerBase):
         # Update bad tokens len
         max_bad_tokens_len = np.max(self.share_inputs["bad_tokens_len"].numpy())
         logger.info(f"block_tables before get_token_positions : {self.share_inputs['block_tables']}")
-        self.positions = get_token_positions(
-            seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
-            seq_lens_this_time=self.seq_lens_this_time_buffer,
-            max_num_seqs=self.scheduler_config.max_num_seqs,
-        )
+        self.positions = self.routing_replay_manager.get_token_positions()
         logger.info(f"positions {self.positions}")
 
         # Initialize forward meta data
@@ -2267,6 +2268,32 @@ class GPUModelRunner(ModelRunnerBase):
 
         prompt_logprobs_list = self._get_prompt_logprobs_list(model_output)
 
+        # Routing replay
+        if self.fd_config.routing_replay_config.enable_routing_replay:
+            # Update host cache
+            logger.info(f"block_tables before compute_slot_mapping : {self.share_inputs['block_tables']}")
+            slot_mapping = self.routing_replay_manager.compute_slot_mapping(
+                positions=self.positions,
+            )
+            self.routing_replay_manager.update_host_cache(positions=self.positions, slot_mapping=slot_mapping)
+
+            # query -> query_token_idx -> _inner_block_token_id
+
+            if (
+                not self.exist_prefill()
+                and not self.exist_decode()
+                and self.share_inputs["is_block_step"].sum() == 0
+                and self.share_inputs["is_chunk_step"].sum() == 0
+            ):
+                # Get the mapping from tokens to blocks id
+                # batch_id(request_id) -> query_token_idx -> _inner_block_token_id
+
+                # Gollective all routing of finished requests
+
+                # Put routing of finished requests to store
+                self.routing_replay_manager.put_table_to_store()
+            return None
+        
         if self.is_pooling_model:
             pooler_output = self._pool(model_output, num_running_requests)
 
@@ -2426,6 +2453,9 @@ class GPUModelRunner(ModelRunnerBase):
             else:
                 skip_save_output = False
 
+        
+
+
             post_process(
                 sampler_or_pooler_output=sampler_output,
                 model_output=model_output_data,
@@ -2486,33 +2516,6 @@ class GPUModelRunner(ModelRunnerBase):
                     self.speculative_config.num_speculative_tokens,
                 )
 
-        # Routing replay
-        if self.fd_config.routing_replay_config.enable_routing_replay:
-            # Update host cache
-            logger.info(f"block_tables before compute_slot_mapping : {self.share_inputs['block_tables']}")
-            slot_mapping = compute_slot_mapping(
-                block_table=self.share_inputs["block_tables"],
-                positions=self.positions,
-                block_size=self.cache_config.block_size,
-            )
-            self.routing_replay_manager.update_host_cache(positions=self.positions, slot_mapping=slot_mapping)
-
-            # query -> query_token_idx -> _inner_block_token_id
-
-            if (
-                not self.exist_prefill()
-                and not self.exist_decode()
-                and self.share_inputs["is_block_step"].sum() == 0
-                and self.share_inputs["is_chunk_step"].sum() == 0
-            ):
-                # Get the mapping from tokens to blocks id
-                # batch_id(request_id) -> query_token_idx -> _inner_block_token_id
-
-                # Gollective all routing of finished requests
-
-                # Put routing of finished requests to store
-                self.routing_replay_manager.put_table_to_store()
-            return None
 
     def _pool(self, hidden_states: paddle.Tensor, num_running_requests: int) -> Optional[ModelRunnerOutput]:
 
