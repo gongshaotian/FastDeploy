@@ -681,13 +681,7 @@ class GPUModelRunner(ModelRunnerBase):
 
                 # Routing Replay
                 if self.fd_config.routing_replay_config.enable_routing_replay:
-                    # if prefill_start_index == 0:
-                    # self.routing_replay_manager.register_request(
-                    #     batch_id=idx,
-                    #     request_id=request.request_id,
-                    #     seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
-                    #     seq_lens_this_time=self.seq_lens_this_time_buffer
-                    # )
+                    # 1.prefix task(need regist) 2. chunkend task(not need regist)
                     self.routing_replay_manager.register_request(
                         batch_id=idx,
                         request_id=request.request_id,
@@ -1446,10 +1440,12 @@ class GPUModelRunner(ModelRunnerBase):
         # Update bad tokens len
         max_bad_tokens_len = np.max(self.share_inputs["bad_tokens_len"].numpy())
         logger.info(f"block_tables before get_token_positions : {self.share_inputs['block_tables']}")
-        self.positions = self.routing_replay_manager.get_token_positions(
-            seq_lens_decoder=self.share_inputs["seq_lens_decoder"], seq_lens_this_time=self.seq_lens_this_time_buffer
-        )
-        logger.info(f"positions {self.positions}")
+        if self.fd_config.routing_replay_config.enable_routing_replay:
+            self.positions = self.routing_replay_manager.get_token_positions(
+                seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
+                seq_lens_this_time=self.seq_lens_this_time_buffer,
+            )
+            logger.info(f"positions {self.positions}")
 
         # Initialize forward meta data
         self.initialize_forward_meta(is_dummy_or_profile_run=is_dummy_or_profile_run)
@@ -2539,6 +2535,7 @@ class GPUModelRunner(ModelRunnerBase):
             )
             logger.info(f"stop_flags: {self.share_inputs['stop_flags']}")
             is_empty_batch = paddle.equal(self.seq_lens_routing_buffer[:, 0], 0)  # 1.empty batch 2. preempted request
+            logger.info(f"is_empty_batch: {is_empty_batch} seq_lens_routing_buffer{self.seq_lens_routing_buffer}")
             not_block_chunk_empty = paddle.logical_not(
                 paddle.logical_or(
                     is_empty_batch,
@@ -2552,8 +2549,10 @@ class GPUModelRunner(ModelRunnerBase):
                 seq_lens_decoder=self.seq_lens_routing_buffer,
                 seq_lens_this_time=self.seq_lens_this_time_buffer,
             )
+
             self.seq_lens_routing_buffer.copy_(self.share_inputs["seq_lens_decoder"])
-            return None
+
+        return None
 
     def _pool(self, hidden_states: paddle.Tensor, num_running_requests: int) -> Optional[ModelRunnerOutput]:
 

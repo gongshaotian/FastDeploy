@@ -11,6 +11,29 @@ def openai_client():
     return client
 
 
+def send_r3_streaming_chat_sort(openai_client, user_id: str = "r3_chat_completion_stream_test_prefixcache"):
+    """
+    Test streaming chat functionality with the local service
+    """
+    response = openai_client.chat.completions.create(
+        model="default",
+        messages=[
+            {
+                "role": "system",
+                "content": "总结下下面这道美食的菜名：老母鸡汤方便面+煎蛋+青菜的做法可以按照以下步骤进行：\n\n### 泰式风味老母鸡汤方便面\n\n1. **准备材料**：\n\n\t* 老母鸡半只或整只（根据人数调整）\n\t* 方便面一包\n\t* 姜几片\n\t* 葱一根\n\t* 香菜一根（可选）\n\t* 香茅草或柠檬叶（可选，增添泰式风味）\n\t* 椰浆适量（可选）\n\t* 鱼露或生抽适量（调味）\n\t* 盐和胡椒粉适量（调味）\n\n",
+            },
+        ],
+        temperature=1,
+        top_p=0,
+        max_tokens=32768,
+        seed=13,
+        stream=True,
+        user=user_id,  # "r3_chat_completion_stream_test",
+    )
+
+    return response
+
+
 def send_r3_streaming_chat(openai_client, user_id: str = "r3_chat_completion_stream_test_prefixcache"):
     """
     Test streaming chat functionality with the local service
