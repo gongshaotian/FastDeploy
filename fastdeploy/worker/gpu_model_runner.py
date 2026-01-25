@@ -2245,6 +2245,13 @@ class GPUModelRunner(ModelRunnerBase):
 
         self._prepare_inputs()
         self.sampler.pre_process(p_done_idxs)
+        if self.fd_config.routing_replay_config.enable_routing_replay:
+            logger.info(f"block_tables before get_token_positions : {self.share_inputs['block_tables']}")
+            self.positions = self.routing_replay_manager.get_token_positions(
+                seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
+                seq_lens_this_time=self.seq_lens_this_time_buffer,
+            )
+            logger.info(f"positions {self.positions}")
 
         # 1.1 Update state of logits processor
         for proc in self.sampling_metadata.logits_processors:
@@ -2500,12 +2507,12 @@ class GPUModelRunner(ModelRunnerBase):
 
         # Routing replay
         if self.fd_config.routing_replay_config.enable_routing_replay:
-            logger.info(f"block_tables before get_token_positions : {self.share_inputs['block_tables']}")
-            self.positions = self.routing_replay_manager.get_token_positions(
-                seq_lens_decoder=self.seq_lens_routing_buffer,
-                seq_lens_this_time=self.seq_lens_this_time_buffer,
-            )
-            logger.info(f"positions {self.positions}")
+            # logger.info(f"block_tables before get_token_positions : {self.share_inputs['block_tables']}")
+            # self.positions = self.routing_replay_manager.get_token_positions(
+            #     seq_lens_decoder=self.seq_lens_routing_buffer,
+            #     seq_lens_this_time=self.seq_lens_this_time_buffer,
+            # )
+            # logger.info(f"positions {self.positions}")
 
             # Update host cache
             logger.info(f"block_tables before compute_slot_mapping : {self.share_inputs['block_tables']}")
