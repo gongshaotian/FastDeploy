@@ -121,7 +121,7 @@ def save_routing_to_buffer(
     token_num, top_k = topk_ids.shape
     max_num_seqs, num_hidden_layers, max_model_len, _ = routing_replay_table.shape
     assert token_num > 0
-
+    logger.info(f"[R3] Origin routing {topk_ids}")
     assert topk_ids.shape[1] == routing_replay_table.shape[3], (topk_ids.shape[1], routing_replay_table.shape[3])
     assert batch_id_per_token.shape[0] == token_num, (batch_id_per_token.shape[0], token_num)
     assert seq_lens_decoder.shape[0] == max_num_seqs, (seq_lens_decoder.shape[0], max_num_seqs)
@@ -149,7 +149,7 @@ def save_routing_to_buffer(
 class RoutingReplayManager:
     """Request level routing replay table manager"""
 
-    def __init__(self, fd_config: FDConfig, block_table):
+    def __init__(self, fd_config: FDConfig, block_table, total_block_num):
         self.fd_config = fd_config
         self.max_num_seqs = fd_config.scheduler_config.max_num_seqs
         self.max_model_len = fd_config.model_config.max_model_len
@@ -165,15 +165,15 @@ class RoutingReplayManager:
         self.routing_store = get_routing_store(fd_config=fd_config)
         self.routing_batch_to_request: Dict[int, str] = {}
 
-        self._init_routing_cache(dtype="int32")
+        self._init_routing_cache(dtype="int32", total_block_num=total_block_num)
 
         self.block_table = block_table
 
-    def _init_routing_cache(self, dtype: str):
+    def _init_routing_cache(self, dtype: str, total_block_num: int):
         """Initialize the device buffer and host buffer."""
 
-        max_num_kv_tokens = self.fd_config.cache_config.total_block_num * self.fd_config.cache_config.block_size
-
+        max_num_kv_tokens = total_block_num * self.fd_config.cache_config.block_size
+        logger.info(f"[R3] Init routing replay table, max_num_kv_tokens: {max_num_kv_tokens}")
         self._host_cache = paddle.full(
             shape=[max_num_kv_tokens, self.num_moe_layers, self.moe_top_k], fill_value=-1, dtype=dtype, device="cpu"
         )
@@ -191,11 +191,14 @@ class RoutingReplayManager:
             if len(position) > 0 and len(slot_mapping[batch_id]) > 0:
                 logger.info(f"position: {position}, slot mapping: {slot_mapping[batch_id]}")
                 routing_ids = self.routing_replay_table[batch_id, :, position, :]
-                logger.info(f"routing_ids: {routing_ids}")
+                routing_ids = routing_ids.cpu()
+
                 # Reshape [layer, token, topk] -> [token, layer, topk]
-                routing_ids = routing_ids.transpose([1, 0, 2])
-                logger.info(f"after transpose routing ids: {routing_ids}")
-                self._host_cache[slot_mapping[batch_id], :, :] = routing_ids
+                routing_ids_transponse = paddle.transpose(routing_ids, [1, 0, 2])
+                logger.info(f"after transpose routing ids: {routing_ids_transponse}")
+
+                logger.info(f"slice host cache {self._host_cache[slot_mapping[batch_id], :, :]}")
+                self._host_cache[slot_mapping[batch_id], :, :] = routing_ids_transponse
                 logger.info(f" update host cache: {self._host_cache[slot_mapping[batch_id], :, :]}")
 
     def get_token_positions(self, seq_lens_decoder, seq_lens_this_time):
@@ -256,7 +259,7 @@ class RoutingReplayManager:
             if len(slot_map) > 0:
                 logger.info(f"[R3] _get_routing_from_cache {slot_map}")
                 token_cached_routing = self._host_cache[slot_map, :, :]
-                return token_cached_routing.transpose([1, 0, 2])
+                return paddle.transpose(token_cached_routing, [1, 0, 2])
         raise ValueError("No cached routing found")
 
     def put_finished_batch(
@@ -279,24 +282,13 @@ class RoutingReplayManager:
                     )
                 )
 
-    def register_request(self, batch_id: int, request_id: str, seq_lens_decoder, seq_lens_this_time):
+    def register_request(self, batch_id: int, request_id: str):
         """
         Register a new request to routing replay table
         Args:
             batch_id: The batch ID of this request
             request_id: The global ID of the request is usually executed by the training process in RL
         """
-        # # Save requests that have been finished for the current slot
-        # if batch_id in self.routing_batch_to_request:
-        #     pre_request_id = self._deregister_request(batch_id)
-        #     asyncio.run(
-        #         self._put_request_to_store(
-        #             batch_id=batch_id,
-        #             request_id=pre_request_id,
-        #             seq_lens_decoder=seq_lens_decoder,
-        #             seq_lens_this_time=seq_lens_this_time
-        #         )
-        #     )
         # assert batch_id not in self.routing_batch_to_request
         if batch_id in self.routing_batch_to_request:
             logger.warning(f"[R3] Request {request_id} has been registered")
