@@ -121,7 +121,6 @@ def save_routing_to_buffer(
     token_num, top_k = topk_ids.shape
     max_num_seqs, num_hidden_layers, max_model_len, _ = routing_replay_table.shape
     assert token_num > 0
-    logger.info(f"[R3] Origin routing {topk_ids}")
     assert topk_ids.shape[1] == routing_replay_table.shape[3], (topk_ids.shape[1], routing_replay_table.shape[3])
     assert batch_id_per_token.shape[0] == token_num, (batch_id_per_token.shape[0], token_num)
     assert seq_lens_decoder.shape[0] == max_num_seqs, (seq_lens_decoder.shape[0], max_num_seqs)
@@ -173,7 +172,7 @@ class RoutingReplayManager:
         """Initialize the device buffer and host buffer."""
 
         max_num_kv_tokens = total_block_num * self.fd_config.cache_config.block_size
-        logger.info(f"[R3] Init routing replay table, max_num_kv_tokens: {max_num_kv_tokens}")
+
         self._host_cache = paddle.full(
             shape=[max_num_kv_tokens, self.num_moe_layers, self.moe_top_k], fill_value=-1, dtype=dtype, device="cpu"
         )
@@ -182,6 +181,9 @@ class RoutingReplayManager:
             shape=[self.max_num_seqs, self.num_moe_layers, self.max_model_len, self.moe_top_k],
             fill_value=-1,
             dtype="int32",
+        )
+        logger.info(
+            f"[R3] The host cache size is:{self._host_cache.shape}, device cache size is: {self.routing_replay_table.shape}"
         )
 
     def update_host_cache(self, positions: paddle.Tensor, slot_mapping: paddle.Tensor):
@@ -203,8 +205,6 @@ class RoutingReplayManager:
 
     def get_token_positions(self, seq_lens_decoder, seq_lens_this_time):
         """Get token position of each sequence in a batch."""
-        print("seq_lens_decoder", seq_lens_decoder)
-        print("seq_lens_this_time", seq_lens_this_time)
         starts = seq_lens_decoder.numpy()[:, 0]
         increase_num = seq_lens_this_time.numpy()[:, 0]
 
@@ -222,28 +222,24 @@ class RoutingReplayManager:
         """ """
         slot_mapping = []
         for batch_id, position in enumerate(positions):
-            print("position", position)
             if len(position) == 0:
                 slot_mapping.append([])
                 continue
             block_table_indices = position // self.fd_config.cache_config.block_size
-            print("block_table_indices", block_table_indices)
             token_block_ids = self.block_table[batch_id, block_table_indices]
             block_offset = position % self.fd_config.cache_config.block_size
 
             token_cache_ids = np.array(token_block_ids) * self.fd_config.cache_config.block_size + block_offset
             slot_mapping.append(token_cache_ids)
 
-        print("slot_mapping", slot_mapping)
         return slot_mapping
 
     def _get_request_cache_ids(self, finished_batch_ids, seq_lens_decoder, seq_lens_this_time):
         """
         1. finish the step: after update input, lens = seq_lens_decoder_buffer
-        2. clear parameter: after update input, lens = seq_lens_decoder_buffer"""
+        2. clear parameter: after update input, lens = seq_lens_decoder_buffer
+        """
         current_token_nums = seq_lens_decoder.numpy()[:, 0]
-        print(f"{seq_lens_decoder} {seq_lens_this_time}")
-        print("current_token_nums", current_token_nums)
         positions = []
         for batch_id in range(self.max_num_seqs):
             position = []
@@ -257,7 +253,6 @@ class RoutingReplayManager:
         """Collection the cached routing information"""
         for slot_map in token_cache_ids:
             if len(slot_map) > 0:
-                logger.info(f"[R3] _get_routing_from_cache {slot_map}")
                 token_cached_routing = self._host_cache[slot_map, :, :]
                 return paddle.transpose(token_cached_routing, [1, 0, 2])
         raise ValueError("No cached routing found")
@@ -289,7 +284,7 @@ class RoutingReplayManager:
             batch_id: The batch ID of this request
             request_id: The global ID of the request is usually executed by the training process in RL
         """
-        # assert batch_id not in self.routing_batch_to_request
+        # The chunked prefill tasks will be registered repeatedly
         if batch_id in self.routing_batch_to_request:
             logger.warning(f"[R3] Request {request_id} has been registered")
             return
@@ -322,7 +317,7 @@ class RoutingReplayManager:
             batch_buffer = self._get_routing_from_cache(token_cache_ids=slot_mapping)
             logger.info(f"batch_buffer {batch_buffer} batch_buffe_old {batch_buffe_old}")
             logger.info(
-                f"batch_buffer_old equal batch_buffer{paddle.equal_all(batch_buffe_old[:,:batch_buffer.shape[1],:], batch_buffer)}"
+                f"batch_buffer_old equal batch_buffer {paddle.equal_all(batch_buffe_old[:,:batch_buffer.shape[1],:], batch_buffer)}"
             )
             tasks = []
             for layer_id in range(self.num_moe_layers):

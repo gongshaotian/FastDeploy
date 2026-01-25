@@ -2507,15 +2507,7 @@ class GPUModelRunner(ModelRunnerBase):
 
         # Routing replay
         if self.fd_config.routing_replay_config.enable_routing_replay:
-            # logger.info(f"block_tables before get_token_positions : {self.share_inputs['block_tables']}")
-            # self.positions = self.routing_replay_manager.get_token_positions(
-            #     seq_lens_decoder=self.seq_lens_routing_buffer,
-            #     seq_lens_this_time=self.seq_lens_this_time_buffer,
-            # )
-            # logger.info(f"positions {self.positions}")
-
             # Update host cache
-            logger.info(f"block_tables before compute_slot_mapping : {self.share_inputs['block_tables']}")
             slot_mapping = self.routing_replay_manager.compute_slot_mapping(positions=self.positions)
             self.routing_replay_manager.update_host_cache(positions=self.positions, slot_mapping=slot_mapping)
 
@@ -2523,7 +2515,6 @@ class GPUModelRunner(ModelRunnerBase):
             logger.info(
                 f"berfore put to store {self.share_inputs['seq_lens_decoder']} {self.seq_lens_this_time_buffer}"
             )
-            # self.routing_replay_manager.put_table_to_store(seq_lens_decoder=self.seq_lens_routing_buffer, seq_lens_this_time=self.seq_lens_this_time_buffer)
             logger.info(
                 f"is_block_step :{self.share_inputs['is_block_step']} is_chunk_step:{self.share_inputs['is_chunk_step']}"
             )
