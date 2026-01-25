@@ -708,13 +708,12 @@ class GPUModelRunner(ModelRunnerBase):
                     has_decode_task = True
 
                 # Routing Replay
-                logger.info(f"[R3] self.share_inputs['is_block_step'][idx] {self.share_inputs['is_block_step'][idx]}")
-                logger.info(f"[R3] self.seq_lens_decoder[idx] {self.seq_lens_routing_buffer[idx]}")
                 if (
                     self.fd_config.routing_replay_config.enable_routing_replay
                     and self.seq_lens_routing_buffer[idx][0] == 0
                 ):  # new decode task
                     self.routing_replay_manager.register_request(batch_id=idx, request_id=request.request_id)
+
                 continue
             else:  # preempted task
                 logger.info(f"Handle preempted request {request} at idx {idx}")
@@ -2022,9 +2021,6 @@ class GPUModelRunner(ModelRunnerBase):
             if int((self.share_inputs["seq_lens_this_time"] > 0).sum()) == 0:
                 break
 
-        # if self.fd_config.routing_replay_config.enable_routing_replay:
-        #     self.routing_replay_manager.clear_routing_table()
-
     def _update_chunked_prefill(self, tasks):
         """
         Update chunked prefill related parameters
@@ -2740,9 +2736,6 @@ class GPUModelRunner(ModelRunnerBase):
         self.prompt_logprobs_reqs.clear()
         self.in_progress_prompt_logprobs.clear()
         self.forward_batch_reqs_list = [None for _ in range(self.scheduler_config.max_num_seqs)]
-
-        # if self.fd_config.routing_replay_config.enable_routing_replay:
-        #     self.routing_replay_manager.put_table_to_store(seq_lens_decoder=self.share_inputs["seq_lens_decoder"], seq_lens_this_time=self.seq_lens_this_time_buffer)
 
     def update_parameters(self, pid):
         """Dynamic model loader use to update parameters use for RL"""
