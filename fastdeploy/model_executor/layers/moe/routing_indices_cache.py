@@ -164,7 +164,9 @@ class RoutingReplayManager:
         self.routing_store = get_routing_store(fd_config=fd_config)
         self.routing_batch_to_request: Dict[int, str] = {}
 
-        self._init_routing_cache(dtype="int32", total_block_num=total_block_num)
+        # TODO(gongshaotian): Dynamic routing cache dtype
+        self.routing_dtype = "int32"
+        self._init_routing_cache(dtype=self.routing_dtype, total_block_num=total_block_num)
 
         self.block_table = block_table
 
@@ -180,7 +182,7 @@ class RoutingReplayManager:
         self.routing_replay_table = paddle.full(
             shape=[self.max_num_seqs, self.num_moe_layers, self.max_model_len, self.moe_top_k],
             fill_value=-1,
-            dtype="int32",
+            dtype=dtype,
         )
         logger.info(
             f"[R3] The host cache size is:{self._host_cache.shape}, device cache size is: {self.routing_replay_table.shape}"
@@ -315,6 +317,8 @@ class RoutingReplayManager:
             )
             logger.info(f"slot_mapping {slot_mapping}")
             batch_buffer = self._get_routing_from_cache(token_cache_ids=slot_mapping)
+            # TODO(gongshaotian): Delete pad func after trainer support dynamic len
+            batch_buffer = self.pad_routing_cache(routing_indices=batch_buffer)
             logger.info(f"batch_buffer {batch_buffer} batch_buffe_old {batch_buffe_old}")
             logger.info(
                 f"batch_buffer_old equal batch_buffer {paddle.equal_all(batch_buffe_old[:,:batch_buffer.shape[1],:], batch_buffer)}"
@@ -417,6 +421,16 @@ class RoutingReplayManager:
         """Clear the routing indices of the request"""
         self._clear_table_slot(batch_id)
         self.routing_batch_to_request.pop(batch_id, None)
+
+    def pad_routing_cache(self, routing_indices) -> paddle.Tensor:
+        """Pad routing indices of the request levevl to max model len"""
+        current_shape = routing_indices.shape[1]
+        pad_tensor = paddle.full(
+            shape=[self.num_moe_layers, (self.max_model_len - current_shape), self.moe_top_k],
+            fill_value=-1,
+            dtype=self.routing_dtype,
+        )
+        return paddle.concat([routing_indices, pad_tensor], axis=1)
 
 
 class RoutingStoreBase(ABC):
