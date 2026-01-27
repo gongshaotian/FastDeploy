@@ -3007,7 +3007,8 @@ class GPUModelRunner(ModelRunnerBase):
         return prompt_logprobs_list
 
     def initialize_routing_replay_manager(self):
-        """ """
+        """Initialize the routing replay manager after initialize the KVCache"""
+        # Use updated block number
         self.routing_replay_manager = RoutingReplayManager(
             fd_config=self.fd_config,
             block_table=self.share_inputs["block_tables"],
