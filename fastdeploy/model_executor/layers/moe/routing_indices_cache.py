@@ -260,9 +260,10 @@ class RoutingReplayManager:
         seq_lens_decoder,
         seq_lens_this_time,
     ):
-        for batch_id, finished in enumerate(finished_batch_ids):
+        finished_batch_ids_list = finished_batch_ids.cpu().tolist()
+        for batch_id, finished in enumerate(finished_batch_ids_list):
             if finished:
-                assert batch_id in self.routing_batch_to_request
+                assert batch_id in self.routing_batch_to_request.keys()
                 request_id = self._deregister_request(batch_id)
                 asyncio.run(
                     self._put_request_to_store(
