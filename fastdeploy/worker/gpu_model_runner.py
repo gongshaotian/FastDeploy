@@ -1424,8 +1424,6 @@ class GPUModelRunner(ModelRunnerBase):
         # NOTE: (changwenbin) Initialized to max_num_seq '-1' before copying, marking illegal positions
         self.share_inputs["batch_id_per_token"][:] = -1
         self.share_inputs["batch_id_per_token"].copy_(batch_id_per_token, False)
-        logger.info(f"{self.share_inputs['ids_remove_padding']}")
-        logger.info(f"{self.share_inputs['batch_id_per_token']}")
         self.share_inputs["cu_seqlens_q"].copy_(cu_seqlens_q, False)
         self.share_inputs["cu_seqlens_k"].copy_(cu_seqlens_k, False)
 
@@ -2242,12 +2240,10 @@ class GPUModelRunner(ModelRunnerBase):
         self._prepare_inputs()
         self.sampler.pre_process(p_done_idxs)
         if self.fd_config.routing_replay_config.enable_routing_replay:
-            logger.info(f"block_tables before get_token_positions : {self.share_inputs['block_tables']}")
             self.positions = self.routing_replay_manager.get_token_positions(
                 seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
                 seq_lens_this_time=self.seq_lens_this_time_buffer,
             )
-            logger.info(f"positions {self.positions}")
 
         # 1.1 Update state of logits processor
         for proc in self.sampling_metadata.logits_processors:
@@ -2280,7 +2276,6 @@ class GPUModelRunner(ModelRunnerBase):
             model_output = model_output[: self.real_token_num]
 
         prompt_logprobs_list = self._get_prompt_logprobs_list(model_output)
-        logger.info(f"berfore update input {self.share_inputs['seq_lens_decoder']} {self.seq_lens_this_time_buffer}")
 
         if self.is_pooling_model:
             pooler_output = self._pool(model_output, num_running_requests)
@@ -2508,22 +2503,13 @@ class GPUModelRunner(ModelRunnerBase):
             self.routing_replay_manager.update_host_cache(positions=self.positions, slot_mapping=slot_mapping)
 
             # Put routing of finished requests to store
-            logger.info(
-                f"berfore put to store {self.share_inputs['seq_lens_decoder']} {self.seq_lens_this_time_buffer}"
-            )
-            logger.info(
-                f"is_block_step :{self.share_inputs['is_block_step']} is_chunk_step:{self.share_inputs['is_chunk_step']}"
-            )
-            logger.info(f"stop_flags: {self.share_inputs['stop_flags']}")
             is_empty_batch = paddle.equal(self.seq_lens_routing_buffer[:, 0], 0)  # 1.empty batch 2. preempted request
-            logger.info(f"is_empty_batch: {is_empty_batch} seq_lens_routing_buffer{self.seq_lens_routing_buffer}")
             not_block_chunk_empty = paddle.logical_not(
                 paddle.logical_or(
                     is_empty_batch,
                     paddle.logical_or(self.share_inputs["is_block_step"], self.share_inputs["is_chunk_step"]),
                 )
             )
-            logger.info(f"not_block_chunk_empty: {not_block_chunk_empty}")
             finished_batch_ids = paddle.logical_and(self.share_inputs["stop_flags"][:, 0], not_block_chunk_empty)
             self.routing_replay_manager.put_finished_batch(
                 finished_batch_ids=finished_batch_ids,
