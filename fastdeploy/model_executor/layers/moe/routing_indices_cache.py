@@ -260,7 +260,6 @@ class RoutingReplayManager:
         seq_lens_decoder,
         seq_lens_this_time,
     ):
-        logger.info(f"[R3] put_finished_batch {finished_batch_ids}")
         for batch_id, finished in enumerate(finished_batch_ids):
             if finished:
                 assert batch_id in self.routing_batch_to_request
@@ -458,7 +457,6 @@ class RoutingStoreLocal(RoutingStoreBase):
         dir_path = os.path.join(self.local_store_dir, f"{rollout_id}")
         os.makedirs(dir_path, exist_ok=True)
         file_path = os.path.join(dir_path, f"layer_{layer_idx}.pdtensor")
-        logger.info(f"[R3] The routing key {routing_key} routing value {routing_indices}")
         paddle.save(routing_indices, file_path)
         logger.info(f"[R3] The routing key {routing_key} put cost is {time.perf_counter()-time_before_put}s")
 
@@ -524,8 +522,8 @@ class RoutingStoreRDMA(RoutingStoreBase):
 
         # async put
         time_before_put = time.perf_counter()
-        routing_indices_pin = routing_indices.cpu()
-        routing_indices_np = routing_indices_pin.numpy()
+        routing_indices_cpu = routing_indices.cpu()
+        routing_indices_np = np.array(routing_indices_cpu.numpy(), copy=True)
         copy_time = time.perf_counter()
         await self.p2p_client.put(rdma_rollout_key, routing_indices_np)
         logger.info(
