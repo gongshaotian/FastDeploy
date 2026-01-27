@@ -317,12 +317,13 @@ class RoutingReplayManager:
             )
             logger.info(f"slot_mapping {slot_mapping}")
             batch_buffer = self._get_routing_from_cache(token_cache_ids=slot_mapping)
-            # TODO(gongshaotian): Delete pad func after trainer support dynamic len
-            batch_buffer = self.pad_routing_cache(routing_indices=batch_buffer)
-            logger.info(f"batch_buffer {batch_buffer} batch_buffe_old {batch_buffe_old}")
             logger.info(
                 f"batch_buffer_old equal batch_buffer {paddle.equal_all(batch_buffe_old[:,:batch_buffer.shape[1],:], batch_buffer)}"
             )
+
+            # TODO(gongshaotian): Delete pad func after trainer support dynamic len
+            batch_buffer = self.pad_routing_cache(routing_indices=batch_buffer)
+            logger.info(f"batch_buffer {batch_buffer} batch_buffe_old {batch_buffe_old}")
             tasks = []
             for layer_id in range(self.num_moe_layers):
                 layer_buffer = batch_buffer[layer_id]
