@@ -75,16 +75,16 @@ def _save_routing_kernel(
     len_decoder = tl.load(SEQ_LENS_DECODER_PTR + batch_ids, mask=pad_mask)
     token_seq_pos = len_decoder + token_relative_index
 
-    STRIDE_BUF_SEQ = NUM_HIDDEN_LAYERS * MAX_MODEL_LEN * TOP_K
-    STRIDE_BUF_LAYER = MAX_MODEL_LEN * TOP_K
-    STRIDE_BUF_TOKEN = TOP_K
+    STRIDE_BUF_SEQ = MAX_MODEL_LEN * NUM_HIDDEN_LAYERS * TOP_K
+    STRIDE_BUF_TOKEN = NUM_HIDDEN_LAYERS * TOP_K
+    STRIDE_BUF_LAYER = TOP_K
 
     # [BLOCK_SIZE_M, BLOCK_SIZE_K]
     output_ptrs = (
         ROUTING_REPLAY_TABLE_PTR
         + batch_ids[:, None] * STRIDE_BUF_SEQ
-        + LAYER_IDX * STRIDE_BUF_LAYER
         + token_seq_pos[:, None] * STRIDE_BUF_TOKEN
+        + LAYER_IDX * STRIDE_BUF_LAYER
         + k_offsets[None, :]
     )
 
@@ -119,7 +119,7 @@ def save_routing_to_buffer(
         topk_ids = topk_ids_all[: batch_id_per_token.shape[0], :]
 
     token_num, top_k = topk_ids.shape
-    max_num_seqs, num_hidden_layers, max_model_len, _ = routing_replay_table.shape
+    max_num_seqs, max_model_len, num_hidden_layers, _ = routing_replay_table.shape
     assert token_num > 0
     assert topk_ids.shape[1] == routing_replay_table.shape[3], (topk_ids.shape[1], routing_replay_table.shape[3])
     assert batch_id_per_token.shape[0] == token_num, (batch_id_per_token.shape[0], token_num)
@@ -180,7 +180,7 @@ class RoutingReplayManager:
         )
 
         self.routing_replay_table = paddle.full(
-            shape=[self.max_num_seqs, self.num_moe_layers, self.max_model_len, self.moe_top_k],
+            shape=[self.max_num_seqs, self.max_model_len, self.num_moe_layers, self.moe_top_k],
             fill_value=-1,
             dtype=dtype,
         )
@@ -194,15 +194,11 @@ class RoutingReplayManager:
         for batch_id, position in enumerate(positions):
             if len(position) > 0 and len(slot_mapping[batch_id]) > 0:
                 logger.info(f"position: {position}, slot mapping: {slot_mapping[batch_id]}")
-                routing_ids = self.routing_replay_table[batch_id, :, position, :]
+                routing_ids = self.routing_replay_table[batch_id, position, :, :]
                 routing_ids = routing_ids.cpu()
 
-                # Reshape [layer, token, topk] -> [token, layer, topk]
-                routing_ids_transponse = paddle.transpose(routing_ids, [1, 0, 2])
-                logger.info(f"after transpose routing ids: {routing_ids_transponse}")
-
                 logger.info(f"slice host cache {self._host_cache[slot_mapping[batch_id], :, :]}")
-                self._host_cache[slot_mapping[batch_id], :, :] = routing_ids_transponse
+                self._host_cache[slot_mapping[batch_id], :, :] = routing_ids
                 logger.info(f" update host cache: {self._host_cache[slot_mapping[batch_id], :, :]}")
 
     def get_token_positions(self, seq_lens_decoder, seq_lens_this_time):
@@ -325,7 +321,7 @@ class RoutingReplayManager:
             )
             tasks = []
             for layer_id in range(self.num_moe_layers):
-                layer_buffer = batch_buffer[layer_id]
+                layer_buffer = batch_buffer[:, layer_id, :].contiguous()
                 rollout_id = self.split_request_id(request_id)
                 tasks.append(
                     self.routing_store.put(routing_indices=layer_buffer, rollout_id=rollout_id, layer_idx=layer_id)
