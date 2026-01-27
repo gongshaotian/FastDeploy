@@ -194,7 +194,7 @@ class RoutingReplayManager:
         for batch_id, position in enumerate(positions):
             if len(position) > 0 and len(slot_mapping[batch_id]) > 0:
                 logger.info(f"position: {position}, slot mapping: {slot_mapping[batch_id]}")
-                routing_ids = self.routing_replay_table[batch_id, position, :, :]
+                routing_ids = self.routing_replay_table[batch_id, position, :, :].contiguous()
                 routing_ids = routing_ids.cpu()
 
                 logger.info(f"slice host cache {self._host_cache[slot_mapping[batch_id], :, :]}")
