@@ -309,7 +309,7 @@ class RoutingReplayManager:
 
             tasks = []
             for layer_id in range(self.num_moe_layers):
-                layer_buffer = batch_buffer[:, layer_id, :].contiguous()
+                layer_buffer = batch_buffer[layer_id]
                 rollout_id = self.split_request_id(request_id)
                 tasks.append(
                     self.routing_store.put(routing_indices=layer_buffer, rollout_id=rollout_id, layer_idx=layer_id)
