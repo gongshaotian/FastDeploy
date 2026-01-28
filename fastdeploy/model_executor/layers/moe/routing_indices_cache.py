@@ -22,6 +22,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 
+import numpy as np
 import paddle
 import paddle.distributed as dist
 import triton
@@ -452,7 +453,7 @@ class RoutingStoreRDMA(RoutingStoreBase):
         # async put
         time_before_put = time.perf_counter()
         routing_indices_cpu = routing_indices.cpu()
-        routing_indices_np = routing_indices_cpu.numpy()
+        routing_indices_np = np.array(routing_indices_cpu.numpy(), copy=True)
         copy_time = time.perf_counter()
         await self.p2p_client.put(rdma_rollout_key, routing_indices_np)
         logger.info(
