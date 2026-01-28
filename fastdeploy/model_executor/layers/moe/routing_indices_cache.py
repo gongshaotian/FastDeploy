@@ -256,7 +256,6 @@ class RoutingReplayManager:
         self,
         finished_batch_ids,
         seq_lens_decoder,
-        seq_lens_this_time,
     ):
         finished_batch_ids_list = finished_batch_ids.cpu().tolist()
         for batch_id, finished in enumerate(finished_batch_ids_list):
@@ -268,7 +267,6 @@ class RoutingReplayManager:
                         batch_id=batch_id,
                         request_id=request_id,
                         seq_lens_decoder=seq_lens_decoder,
-                        seq_lens_this_time=seq_lens_this_time,
                     )
                 )
 
@@ -299,7 +297,6 @@ class RoutingReplayManager:
         batch_id: int,
         request_id: str,
         seq_lens_decoder,
-        seq_lens_this_time,
     ):
         before_put_request_time = time.perf_counter()
         if self.tp_rank == 0:

@@ -122,7 +122,7 @@ async def run():
         "如果人类突然失去了“睡眠”的能力，世界会变成什么样？请从社会结构、经济模式、娱乐产业三个方面进行脑洞大开的推测。",
     ]
 
-    long_request_list = long_request_list[:1]
+    long_request_list = long_request_list[:64]
     task_baseline = []
     for request_id, request in enumerate(long_request_list):
         task_baseline.append(send_request_baseline(request, request_id))
@@ -138,7 +138,7 @@ if __name__ == "__main__":
     asyncio.run(run())
 
     # Check Routing Overlap
-    for request_id in range(1):
+    for request_id in range(64):
         baseline_path = "./routing_replay_output"
         prefix_r3_path = "./routing_replay_output"
         moe_layer_num = 27

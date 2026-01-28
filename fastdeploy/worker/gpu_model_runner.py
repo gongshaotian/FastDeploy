@@ -2514,7 +2514,6 @@ class GPUModelRunner(ModelRunnerBase):
             self.routing_replay_manager.put_finished_batch(
                 finished_batch_ids=finished_batch_ids,
                 seq_lens_decoder=self.seq_lens_routing_buffer,
-                seq_lens_this_time=self.seq_lens_this_time_buffer,
             )
 
             paddle.assign(self.share_inputs["seq_lens_decoder"], self.seq_lens_routing_buffer)
