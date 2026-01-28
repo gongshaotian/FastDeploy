@@ -707,13 +707,6 @@ class GPUModelRunner(ModelRunnerBase):
                 if self.share_inputs["is_block_step"][idx]:  # has tasks to continue to decode
                     has_decode_task = True
 
-                # Routing Replay
-                if (
-                    self.fd_config.routing_replay_config.enable_routing_replay
-                    and self.seq_lens_routing_buffer[idx][0] == 0
-                ):  # new decode task
-                    self.routing_replay_manager.register_request(batch_id=idx, request_id=request.request_id)
-
                 continue
             else:  # preempted task
                 logger.info(f"Handle preempted request {request} at idx {idx}")

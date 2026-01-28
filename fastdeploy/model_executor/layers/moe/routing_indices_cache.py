@@ -279,8 +279,14 @@ class RoutingReplayManager:
         """
         # The chunked prefill tasks will be registered repeatedly
         if batch_id in self.routing_batch_to_request:
-            logger.warning(f"[R3] Request {request_id} has been registered")
-            return
+            if self.routing_batch_to_request[batch_id] == request_id:
+                logger.warning(f"[R3] Request {request_id} has been registered at {batch_id}.")
+                return
+            else:
+                raise RuntimeError(
+                    f"[R3] The Batch {batch_id} has been registered by request {self.routing_batch_to_request[batch_id]}, now robed by {request_id},"
+                )
+
         # Register the new request
         self.routing_batch_to_request[batch_id] = request_id
         logger.info(f"[R3] Register request {request_id} with batch id {batch_id}")
