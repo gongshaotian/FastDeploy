@@ -299,14 +299,14 @@ std::vector<paddle::Tensor> EPMoeExpertDispatchFP8(
     const bool use_in_ep,
     const int token_nums_this_rank_padded);
 
-std::vector<paddle::Tensor> PerTokenQuant(paddle::Tensor& input,
-                                          const int block_size);
 std::vector<paddle::Tensor> PerTokenQuantPadding(paddle::Tensor& input,
-                                                 const int block_size);
+                                                 const int block_size,
+                                                 const bool use_ue8m0);
 std::vector<paddle::Tensor> MaskedPerTokenQuant(
     paddle::Tensor& input,
     paddle::Tensor& recv_expert_count,
-    const int block_size);
+    const int block_size,
+    const bool use_ue8m0);
 
 std::vector<paddle::Tensor> EPMoeExpertCombine(
     const paddle::Tensor& ffn_out,
@@ -1116,6 +1116,7 @@ void ReasoningPhaseTokenConstraint(const paddle::Tensor& logits,
                                    const paddle::Tensor& reasoning_status,
                                    const paddle::Tensor& output_padding_offset,
                                    const paddle::Tensor& output_cum_offsets,
+                                   const paddle::Tensor& enable_thinking,
                                    int64_t think_end_id,
                                    int64_t line_break_id);
 
@@ -1271,6 +1272,7 @@ PYBIND11_MODULE(fastdeploy_ops, m) {
         py::arg("input"),
         py::arg("recv_expert_count"),
         py::arg("block_size"),
+        py::arg("use_ue8m0") = false,
         "per token per block quant");
 
 #ifdef ENABLE_MACHETE
