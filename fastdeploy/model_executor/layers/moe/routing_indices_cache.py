@@ -350,7 +350,7 @@ class RoutingReplayManager:
                 self._store_wrapper.submit_put_task(routing_indices=paded_batch_buffer, rollout_id=rollout_id)
             else:
                 for layer_id in range(self.num_moe_layers):
-                    layer_buffer = batch_buffer[layer_id]
+                    layer_buffer = paded_batch_buffer[layer_id]
                     self._store_wrapper.submit_put_task(
                         routing_indices=layer_buffer, rollout_id=rollout_id, layer_idx=layer_id
                     )
