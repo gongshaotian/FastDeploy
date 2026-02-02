@@ -567,21 +567,26 @@ class StoreProcess(Process):
 
         self._task_queue = task_queue
         self.routing_replay_config = routing_replay_config
-        self._routing_store = get_routing_store(routing_replay_config=routing_replay_config)
-        self.max_workers = 5
-
-        # Initialize event loop thread
+        self.max_workers = 1
         self._closed = False
-        self._event_loop_thread = AsyncEventLoopThread()
-        self._event_loop_thread.start()
-        if not self._event_loop_thread._started_event.wait(timeout=5.0):
-            raise RuntimeError("Failed to start async event loop thread")
-
-        init_task = {"task_type": "clear_store", "key": "initialize_store", "data": None}
-        self._task_queue.put_nowait(init_task)
+        # Note: _routing_store and _event_loop_thread must be initialized in run()
+        # because they cannot be properly inherited after fork()
+        self._routing_store = None
+        self._event_loop_thread = None
 
     def run(self):
         logger.info(f"[R3] Start Running Store Wrapper in sub process {os.getpid()}")
+
+        # Initialize routing store in subprocess
+        self._routing_store = get_routing_store(routing_replay_config=self.routing_replay_config)
+
+        # Initialize event loop thread in subprocess
+        self._event_loop_thread = AsyncEventLoopThread()
+        self._event_loop_thread.start()
+        if not self._event_loop_thread._started_event.wait(timeout=5.0):
+            raise RuntimeError("Failed to start async event loop thread in subprocess")
+
+        logger.info(f"[R3] Event loop thread started in subprocess {os.getpid()}")
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             while not self._closed:
                 try:
@@ -613,6 +618,7 @@ class StoreProcess(Process):
             future = self._event_loop_thread.submit_coroutine(
                 coro_obj, callback=functools.partial(self._on_async_task_completed, store_task)
             )
+            return future
         except Exception as e:
             logger.error(f"Error submitting put task: {e}")
             traceback.print_exc()
@@ -624,6 +630,7 @@ class StoreProcess(Process):
             future = self._event_loop_thread.submit_coroutine(
                 coro_obj, callback=functools.partial(self._on_async_task_completed, store_task)
             )
+            return future
         except Exception as e:
             logger.error(f"Error during processing clear store task. {e}")
             traceback.print_exc()
@@ -635,6 +642,7 @@ class StoreProcess(Process):
             future = self._event_loop_thread.submit_coroutine(
                 coro_obj, callback=functools.partial(self._on_async_task_completed, store_task)
             )
+            return future
         except Exception as e:
             logger.error(f"Error submitting clear_prefix_batch task: {e}")
             traceback.print_exc()
@@ -643,7 +651,7 @@ class StoreProcess(Process):
     def _on_async_task_completed(self, task, future):
         """ """
         try:
-            result = future.result()
+            # result = future.result()
             logger.info(f"[R3] Async task completed: {task['task_type']}, key: {task.get('key')}")
         except Exception as e:
             logger.error(f"[R3] Async task failed: {task['task_type']}, key: {task.get('key')}, error: {e}")
@@ -671,14 +679,6 @@ class AsyncEventLoopThread(threading.Thread):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
 
-        async def debug_task():
-            logger.info("[EventLoopThread] Debug task started!")
-            await asyncio.sleep(0.1)
-            logger.info("[EventLoopThread] Debug task completed!")
-
-        # 在 run_forever 之前先运行一次调试任务
-        self._loop.run_until_complete(debug_task())
-
         # Set the event loop to be started
         self._started_event.set()
         logger.info("[EventLoopThread] Event loop started, running forever...")
@@ -700,11 +700,7 @@ class AsyncEventLoopThread(threading.Thread):
         if not self._started_event.wait(timeout=5.0):
             raise RuntimeError("Event loop failed to start within 5 seconds")
 
-        logger.info(f"[EventLoopThread] About to submit coroutine: {coro}")
-        logger.info(f"[EventLoopThread] Is coroutine: {asyncio.iscoroutine(coro)}")
-
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        logger.info(f"[EventLoopThread] Coroutine submitted, future: {future}")
 
         if callback:
 
@@ -716,6 +712,7 @@ class AsyncEventLoopThread(threading.Thread):
                     traceback.print_exc()
 
             future.add_done_callback(wrapped_callback)
+            logger.info("coro add callback func")
         return future
 
     def stop(self):
@@ -756,8 +753,7 @@ class RoutingStoreLocal(RoutingStoreBase):
     def __init__(self, routing_replay_config) -> None:
         super().__init__(routing_replay_config=routing_replay_config)
         self.local_store_dir = routing_replay_config.local_store_dir
-
-        # asyncio.run(self.clear_store())
+        os.makedirs(self.local_store_dir, exist_ok=True)
 
     async def put(
         self,
@@ -765,7 +761,6 @@ class RoutingStoreLocal(RoutingStoreBase):
         routing_indices: np.ndarray,
     ) -> None:
         """Put the routing indices into store"""
-        os.makedirs(self.local_store_dir, exist_ok=True)
         # TODO(gongshaotian) covert ./store_dir/routing_key/layer_id.pdtensor to ./store_dir/routing_key.pt
         time_before_put = time.perf_counter()
         file_path = os.path.join(self.local_store_dir, f"{routing_key}.pdtensor")
@@ -798,30 +793,28 @@ class RoutingStoreRDMA(RoutingStoreBase):
         rdma_store_server = routing_replay_config.rdma_store_server
         p2pConfig = P2PConfig(metadata_server=rdma_store_server)
         self.p2p_client = P2PClient(p2pConfig)
-        # asyncio.run(self.clear_store())
 
     async def put(self, routing_key: str, routing_indices: np.ndarray) -> None:
         """Put the routing indices into store"""
         time_before_put = time.perf_counter()
-        try:
-            logger.info("[R3] p2p_client.put() before")
-            await self.p2p_client.put(routing_key, routing_indices)
-            logger.info("[R3] p2p_client.put() completed successfully")
-        except Exception as e:
-            logger.error(f"[R3] p2p_client.put() failed: {e}")
-            raise
-
+        result = await self.p2p_client.put(routing_key, routing_indices)
         logger.info(f"[R3] The routing key {routing_key}, put cost is {time.perf_counter()-time_before_put}s")
+        return result
 
     async def clear_prefix_batch(self, routing_prefix_key: str):
-        # async delete
-        await self.p2p_client.delete_prefix_batch(routing_prefix_key)
-        logger.info(f"[R3] Clear prefix batch, prefix key: {routing_prefix_key}")
+        time_before_clear = time.perf_counter()
+        result = await self.p2p_client.delete_prefix_batch(routing_prefix_key)
+        logger.info(
+            f"[R3] The clear routing prefix key {routing_prefix_key}, cost is {time.perf_counter()-time_before_clear}s"
+        )
+        return result
 
     async def clear_store(self):
         """Clear the routing indices store"""
-        await self.p2p_client.clear()
-        logger.info("[R3] Clear routing store.")
+        time_before_clear = time.perf_counter()
+        result = await self.p2p_client.clear()
+        logger.info(f"[R3] Clear routing store cost is {time.perf_counter()-time_before_clear}s.")
+        return result
 
 
 def get_routing_store(routing_replay_config: RoutingReplayConfig) -> RoutingStoreBase:
