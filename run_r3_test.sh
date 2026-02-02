@@ -15,7 +15,7 @@ python -m fastdeploy.entrypoints.openai.api_server --config ${config_yaml} --mod
     --tensor-parallel-size 1 --max-model-len 32768 --max-num-seqs 1 \
     --enable-chunked-prefill --enable-prefix-caching --port 8888 --max-num-batched-tokens 64 --metrics-port 8889 --engine-worker-queue-port 9999 \
     --graph-optimization-config '{"use_cudagraph": true}' \
-    --routing-replay-config '{"enable_routing_replay":true, "routing_store_type":"local", "local_store_dir":"./routing_replay_output", "use_fused_put":false}' \
+    --routing-replay-config '{"enable_routing_replay":true, "routing_store_type":"rdma", "local_store_dir":"./routing_replay_output", "use_fused_put":false, "rdma_store_server":"redis://10.95.239.155:6379"}' \
     # --speculative-config '{"method": "mtp", "num_speculative_tokens": 1, "num_model_steps": 1,"model": "'$model_path'/mtp"}' \
 
 

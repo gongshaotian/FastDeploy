@@ -14,12 +14,15 @@
 # limitations under the License.
 """
 
+import asyncio
 import atexit
+import functools
 import multiprocessing
 import os
 import shutil
 import threading
 import time
+import traceback
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from multiprocessing import Process, Queue
@@ -441,7 +444,7 @@ class StoreWrapper(object):
             # Wait for all tasks to be processed
             self._routing_store_process.join(timeout=10.0)
             if self._routing_store_process.is_alive():
-                self._routing_store_process.terminate()
+                self._routing_store_process.close()
                 self._routing_store_process.join()
 
         self._task_queue.join()
@@ -472,11 +475,12 @@ class StoreWrapper(object):
 
             # Alarm when the task exceeds 80% of the queue capacity
             if qsize > self.queue_max_size * 0.8:
-                logger.info(
+                logger.warning(
                     f"[Monitor] Queue load is HIGH: {qsize}/{self.queue_max_size}. "
                     f"Dropped tasks so far: {self._dropped_tasks}. "
                     "Consider increasing max_workers or queue_max_size."
                 )
+            logger.info(f"[Monitor] Queue load: {qsize}/{self.queue_max_size}")
 
     def submit_put_task(self, routing_indices: paddle.Tensor, rollout_id: str, layer_idx: int = None) -> None:
         """Submit a put task to the task queue"""
@@ -566,10 +570,20 @@ class StoreProcess(Process):
         self._routing_store = get_routing_store(routing_replay_config=routing_replay_config)
         self.max_workers = 5
 
+        # Initialize event loop thread
+        self._closed = False
+        self._event_loop_thread = AsyncEventLoopThread()
+        self._event_loop_thread.start()
+        if not self._event_loop_thread._started_event.wait(timeout=5.0):
+            raise RuntimeError("Failed to start async event loop thread")
+
+        init_task = {"task_type": "clear_store", "key": "initialize_store", "data": None}
+        self._task_queue.put_nowait(init_task)
+
     def run(self):
         logger.info(f"[R3] Start Running Store Wrapper in sub process {os.getpid()}")
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            while True:
+            while not self._closed:
                 try:
                     task = StoreTask(self._task_queue.get())
                     logger.info(f"[R3] Receive {task['task_type']} task, key: {task['key']}")
@@ -581,38 +595,135 @@ class StoreProcess(Process):
                         logger.info(f"[R3] before process put task, key: {task['key']}")
                         future = executor.submit(self.process_put_task, task)
                         future.add_done_callback(lambda f: self._task_queue.task_done())
-
                     elif task["task_type"] == "clear_store":
                         future = executor.submit(self.process_clear_store_task, task)
                         future.add_done_callback(lambda f: self._task_queue.task_done())
-
                     elif task["task_type"] == "clear_prefix_batch":
                         future = executor.submit(self.process_clear_prefix_batch_task, task)
                         future.add_done_callback(lambda f: self._task_queue.task_done())
-                    logger.info(future.result())
                 except Exception as e:
                     self._task_queue.task_done()
-                    raise ValueError(f"{e}")
+                    raise RuntimeError(f"Error during processing task. {e}")
 
         logger.info(f"[Consumer Process {Process.current_process().pid}] Shutdown.")
 
     def process_put_task(self, store_task: StoreTask) -> None:
         try:
-            self._routing_store.put(routing_key=store_task["key"], routing_indices=store_task["data"])
+            coro_obj = self._routing_store.put(routing_key=store_task["key"], routing_indices=store_task["data"])
+            future = self._event_loop_thread.submit_coroutine(
+                coro_obj, callback=functools.partial(self._on_async_task_completed, store_task)
+            )
         except Exception as e:
-            raise RuntimeError(f"{e}")
+            logger.error(f"Error submitting put task: {e}")
+            traceback.print_exc()
+            raise
 
     def process_clear_store_task(self, store_task: StoreTask) -> None:
         try:
-            self._routing_store.clear_store()
+            coro_obj = self._routing_store.clear_store()
+            future = self._event_loop_thread.submit_coroutine(
+                coro_obj, callback=functools.partial(self._on_async_task_completed, store_task)
+            )
         except Exception as e:
-            raise RuntimeError(f"{e}")
+            logger.error(f"Error during processing clear store task. {e}")
+            traceback.print_exc()
+            raise
 
     def process_clear_prefix_batch_task(self, store_task: StoreTask) -> None:
         try:
-            self._routing_store.clear_prefix_batch(routing_prefix_key=store_task["key"])
+            coro_obj = self._routing_store.clear_prefix_batch(routing_prefix_key=store_task["key"])
+            future = self._event_loop_thread.submit_coroutine(
+                coro_obj, callback=functools.partial(self._on_async_task_completed, store_task)
+            )
         except Exception as e:
-            raise RuntimeError(f"{e}")
+            logger.error(f"Error submitting clear_prefix_batch task: {e}")
+            traceback.print_exc()
+            raise
+
+    def _on_async_task_completed(self, task, future):
+        """ """
+        try:
+            result = future.result()
+            logger.info(f"[R3] Async task completed: {task['task_type']}, key: {task.get('key')}")
+        except Exception as e:
+            logger.error(f"[R3] Async task failed: {task['task_type']}, key: {task.get('key')}, error: {e}")
+            # traceback.print_exc()
+            # # reraise the exception to executor
+            # raise
+            logger.error(f"[Async Thread] Full traceback: {traceback.format_exc()}")
+
+    def close(self):
+        """Close the store process"""
+        self._closed = True
+        if hasattr(self, "_event_loop_thread"):
+            self._event_loop_thread.stop()
+
+
+class AsyncEventLoopThread(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self._loop = None
+        self._started_event = threading.Event()
+        self._closed = False
+
+    def run(self):
+        """Run the async event loop"""
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+
+        async def debug_task():
+            logger.info("[EventLoopThread] Debug task started!")
+            await asyncio.sleep(0.1)
+            logger.info("[EventLoopThread] Debug task completed!")
+
+        # 在 run_forever 之前先运行一次调试任务
+        self._loop.run_until_complete(debug_task())
+
+        # Set the event loop to be started
+        self._started_event.set()
+        logger.info("[EventLoopThread] Event loop started, running forever...")
+
+        try:
+            self._loop.run_forever()
+            logger.info("[EventLoopThread] Event loop stopped")
+        except Exception as e:
+            logger.error(f"[EventLoopThread] Event loop exception: {e}")
+            traceback.print_exc()
+        finally:
+            logger.info("[EventLoopThread] Closing event loop")
+            self._loop.close()
+
+    def submit_coroutine(self, coro, callback=None):
+        """Thread safely submit coroutine to event loop"""
+        if self._closed:
+            raise RuntimeError("Event loop thread is closed")
+        if not self._started_event.wait(timeout=5.0):
+            raise RuntimeError("Event loop failed to start within 5 seconds")
+
+        logger.info(f"[EventLoopThread] About to submit coroutine: {coro}")
+        logger.info(f"[EventLoopThread] Is coroutine: {asyncio.iscoroutine(coro)}")
+
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        logger.info(f"[EventLoopThread] Coroutine submitted, future: {future}")
+
+        if callback:
+
+            def wrapped_callback(f):
+                try:
+                    callback(f)
+                except Exception as e:
+                    print(f"Error in callback: {e}")
+                    traceback.print_exc()
+
+            future.add_done_callback(wrapped_callback)
+        return future
+
+    def stop(self):
+        """Stop the event loop"""
+        if not self._closed:
+            self._closed = True
+            if self._loop:
+                self._loop.call_soon_threadsafe(self._loop.stop)
 
 
 class RoutingStoreBase(ABC):
@@ -622,19 +733,19 @@ class RoutingStoreBase(ABC):
         self.routing_replay_config = routing_replay_config
 
     @abstractmethod
-    def put(self, routing_key: str, routing_indices: np.ndarray) -> None:
+    async def put(self, routing_key: str, routing_indices: np.ndarray) -> None:
         """Put the routing indices into store"""
         raise NotImplementedError
 
     @abstractmethod
-    def clear_store(
+    async def clear_store(
         self,
     ):
         """Clear the routing indices store"""
         raise NotImplementedError
 
     @abstractmethod
-    def clear_prefix_batch(self, routing_prefix_key: str):
+    async def clear_prefix_batch(self, routing_prefix_key: str):
         """Clear the routing indices"""
         raise NotImplementedError
 
@@ -646,29 +757,29 @@ class RoutingStoreLocal(RoutingStoreBase):
         super().__init__(routing_replay_config=routing_replay_config)
         self.local_store_dir = routing_replay_config.local_store_dir
 
-        self.clear_store()
-        os.makedirs(self.local_store_dir, exist_ok=True)
+        # asyncio.run(self.clear_store())
 
-    def put(
+    async def put(
         self,
         routing_key: str,
         routing_indices: np.ndarray,
     ) -> None:
         """Put the routing indices into store"""
+        os.makedirs(self.local_store_dir, exist_ok=True)
         # TODO(gongshaotian) covert ./store_dir/routing_key/layer_id.pdtensor to ./store_dir/routing_key.pt
         time_before_put = time.perf_counter()
         file_path = os.path.join(self.local_store_dir, f"{routing_key}.pdtensor")
         paddle.save(routing_indices, file_path)
         logger.info(f"[R3] The routing key {routing_key} put cost is {time.perf_counter()-time_before_put}s")
 
-    def clear_store(self):
+    async def clear_store(self):
         """Clear the routing indices store"""
         if os.path.isdir(self.local_store_dir):
             shutil.rmtree(self.local_store_dir)
 
         logger.info("[R3] Clear routing store.")
 
-    def clear_prefix_batch(self, routing_prefix_key: str):
+    async def clear_prefix_batch(self, routing_prefix_key: str):
         """Clear the routing indices"""
         raise NotImplementedError
 
@@ -687,22 +798,29 @@ class RoutingStoreRDMA(RoutingStoreBase):
         rdma_store_server = routing_replay_config.rdma_store_server
         p2pConfig = P2PConfig(metadata_server=rdma_store_server)
         self.p2p_client = P2PClient(p2pConfig)
-        self.clear_store()
+        # asyncio.run(self.clear_store())
 
-    def put(self, routing_key: str, routing_indices: np.ndarray) -> None:
+    async def put(self, routing_key: str, routing_indices: np.ndarray) -> None:
         """Put the routing indices into store"""
         time_before_put = time.perf_counter()
-        self.p2p_client.put(routing_key, routing_indices)
+        try:
+            logger.info("[R3] p2p_client.put() before")
+            await self.p2p_client.put(routing_key, routing_indices)
+            logger.info("[R3] p2p_client.put() completed successfully")
+        except Exception as e:
+            logger.error(f"[R3] p2p_client.put() failed: {e}")
+            raise
+
         logger.info(f"[R3] The routing key {routing_key}, put cost is {time.perf_counter()-time_before_put}s")
 
-    def clear_prefix_batch(self, routing_prefix_key: str):
+    async def clear_prefix_batch(self, routing_prefix_key: str):
         # async delete
-        self.p2p_client.delete_prefix_batch(routing_prefix_key)
+        await self.p2p_client.delete_prefix_batch(routing_prefix_key)
         logger.info(f"[R3] Clear prefix batch, prefix key: {routing_prefix_key}")
 
-    def clear_store(self):
+    async def clear_store(self):
         """Clear the routing indices store"""
-        self.p2p_client.clear()
+        await self.p2p_client.clear()
         logger.info("[R3] Clear routing store.")
 
 
