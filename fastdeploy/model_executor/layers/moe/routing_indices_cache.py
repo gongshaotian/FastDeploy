@@ -343,14 +343,12 @@ class RoutingReplayManager:
                 finished_batch_ids=[batch_id], seq_lens_decoder=seq_lens_decoder
             )
             rollout_id = self.split_request_id(request_id)
-            # TODO(gongshaotian): Delete pad func after trainer support dynamic len
-            paded_batch_buffer = self.pad_routing_cache(routing_indices=batch_buffer)
 
             if self.use_fused_put:
-                self._store_wrapper.submit_put_task(routing_indices=paded_batch_buffer, rollout_id=rollout_id)
+                self._store_wrapper.submit_put_task(routing_indices=batch_buffer, rollout_id=rollout_id)
             else:
                 for layer_id in range(self.num_moe_layers):
-                    layer_buffer = paded_batch_buffer[layer_id]
+                    layer_buffer = batch_buffer[layer_id]
                     self._store_wrapper.submit_put_task(
                         routing_indices=layer_buffer, rollout_id=rollout_id, layer_idx=layer_id
                     )
@@ -385,16 +383,6 @@ class RoutingReplayManager:
         rollout_id = reversed_tmp_str[-1][::-1]
         return rollout_id
 
-    def pad_routing_cache(self, routing_indices) -> paddle.Tensor:
-        """Pad routing indices of the request levevl to max model len"""
-        current_shape = routing_indices.shape[1]
-        pad_tensor = paddle.full(
-            shape=[self.num_moe_layers, (self.max_model_len - current_shape), self.moe_top_k],
-            fill_value=-1,
-            dtype=self.routing_dtype,
-        )
-        return paddle.concat([routing_indices, pad_tensor], axis=1)
-
 
 class StoreWrapper(object):
     def __init__(self, fd_config: False) -> None:
@@ -416,6 +404,7 @@ class StoreWrapper(object):
         self._routing_store_process = StoreProcess(
             task_queue=self._task_queue,
             routing_replay_config=self.fd_config.routing_replay_config,
+            max_model_len=self.fd_config.model_config.max_model_len,
         )
         self._sotre_process_running = False
 
@@ -562,9 +551,9 @@ class StoreTask(TypedDict):
 
 
 class StoreProcess(Process):
-    def __init__(self, task_queue: Queue, routing_replay_config: RoutingReplayConfig) -> None:
+    def __init__(self, task_queue: Queue, routing_replay_config: RoutingReplayConfig, max_model_len: int) -> None:
         super().__init__()
-
+        self.max_model_len = max_model_len
         self._task_queue = task_queue
         self.routing_replay_config = routing_replay_config
         self.max_workers = 1
@@ -617,6 +606,7 @@ class StoreProcess(Process):
 
     def process_put_task(self, store_task: StoreTask) -> None:
         try:
+            store_task["data"] = self.pad_routing_indices(store_task["data"])
             coro_obj = self._routing_store.put(routing_key=store_task["key"], routing_indices=store_task["data"])
             future = self._event_loop_thread.submit_coroutine(
                 coro_obj, callback=functools.partial(self._on_async_task_completed, store_task)
@@ -666,6 +656,32 @@ class StoreProcess(Process):
         self._closed = True
         if hasattr(self, "_event_loop_thread"):
             self._event_loop_thread.stop()
+
+    def pad_routing_indices(self, routing_indices: np.ndarray) -> np.ndarray:
+        """Pad routing indices of the request levevl to max model len"""
+        routing_shape = routing_indices.shape
+        # TODO(gongshaotian): Delete pad func after trainer support dynamic len
+        if len(routing_shape) == 2:  # [token, topk]
+            pad_array = np.full(
+                shape=[(self.max_model_len - routing_indices.shape[0]), routing_indices.shape[1]],
+                fill_value=-1,
+                dtype=routing_indices.dtype,
+            )
+            return np.concatenate([routing_indices, pad_array], axis=0)
+
+        elif len(routing_shape) == 3:  # [layer, token, topk]
+            pad_array = np.full(
+                shape=[
+                    routing_indices.shape[0],
+                    (self.max_model_len - routing_indices.shape[1]),
+                    routing_indices.shape[2],
+                ],
+                fill_value=-1,
+                dtype=routing_indices.dtype,
+            )
+            return np.concatenate([routing_indices, pad_array], axis=1)
+        else:
+            raise ValueError(f"Invalid routing indices shape: {routing_shape}")
 
 
 class AsyncEventLoopThread(threading.Thread):
