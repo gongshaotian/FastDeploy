@@ -405,7 +405,7 @@ class StoreWrapper(object):
         layer_num = 61
         max_request = 200
         self.queue_max_size = layer_num * max_request
-        # self._task_queue = multiprocessing.Queue(maxsize=self.queue_max_size)
+
         self.manager = multiprocessing.Manager()
         self._task_queue = self.manager.Queue(maxsize=self.queue_max_size)
 
@@ -586,6 +586,9 @@ class StoreProcess(Process):
         if not self._event_loop_thread._started_event.wait(timeout=5.0):
             raise RuntimeError("Failed to start async event loop thread in subprocess")
 
+        clear_store_task = StoreTask({"task_type": "clear_store", "key": None, "data": None})
+        self._task_queue.put_nowait(clear_store_task)
+
         logger.info(f"[R3] Event loop thread started in subprocess {os.getpid()}")
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             while not self._closed:
@@ -655,10 +658,8 @@ class StoreProcess(Process):
             logger.info(f"[R3] Async task completed: {task['task_type']}, key: {task.get('key')}")
         except Exception as e:
             logger.error(f"[R3] Async task failed: {task['task_type']}, key: {task.get('key')}, error: {e}")
-            # traceback.print_exc()
-            # # reraise the exception to executor
-            # raise
-            logger.error(f"[Async Thread] Full traceback: {traceback.format_exc()}")
+            traceback.print_exc()
+            raise
 
     def close(self):
         """Close the store process"""
@@ -803,7 +804,7 @@ class RoutingStoreRDMA(RoutingStoreBase):
 
     async def clear_prefix_batch(self, routing_prefix_key: str):
         time_before_clear = time.perf_counter()
-        result = await self.p2p_client.delete_prefix_batch(routing_prefix_key)
+        result = await self.p2p_client.delete_prefix_batch([routing_prefix_key])
         logger.info(
             f"[R3] The clear routing prefix key {routing_prefix_key}, cost is {time.perf_counter()-time_before_clear}s"
         )
