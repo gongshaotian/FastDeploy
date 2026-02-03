@@ -775,9 +775,21 @@ class RoutingStoreLocal(RoutingStoreBase):
         routing_indices: np.ndarray,
     ) -> None:
         """Put the routing indices into store"""
-        # TODO(gongshaotian) covert ./store_dir/routing_key/layer_id.pdtensor to ./store_dir/routing_key.pt
+        # TODO(gongshaotian) covert ./store_dir/routing_key/layer_id.pdtensor to ./store_dir/routing_key.pdtensor
         time_before_put = time.perf_counter()
-        file_path = os.path.join(self.local_store_dir, f"{routing_key}.pdtensor")
+
+        if len(routing_indices.shape) == 2:
+            re_layer_id, re_rollout_id = routing_key[::-1].split("_", 1)
+            rollout_id = re_rollout_id[::-1]
+            layer_id = re_layer_id[::-1]
+            request_path = os.path.join(self.local_store_dir, rollout_id)
+            file_path = os.path.join(request_path, f"layer_{layer_id}.pdtensor")
+        elif len(routing_indices.shape) == 3:
+            request_path = os.path.join(self.local_store_dir, routing_key)
+            file_path = os.path.join(request_path, f"{routing_key}.pdtensor")
+        else:
+            raise ValueError(f"Invalid routing indices shape: {routing_indices.shape}")
+
         paddle.save(routing_indices, file_path)
         logger.info(f"[R3] The routing key {routing_key} put cost is {time.perf_counter()-time_before_put}s")
 
