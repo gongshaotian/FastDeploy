@@ -390,9 +390,9 @@ class StoreWrapper(object):
         self.fd_config = fd_config
 
         # Initialize task queue
-        layer_num = 61
-        max_request = 200
-        self.queue_max_size = layer_num * max_request
+        moe_layer_num = fd_config.model_config.num_hidden_layers - fd_config.model_config.moe_layer_start_index
+        max_num_seqs = fd_config.scheduler_config.max_num_seqs
+        self.queue_max_size = moe_layer_num * max_num_seqs * 10
 
         self.manager = multiprocessing.Manager()
         self._task_queue = self.manager.Queue(maxsize=self.queue_max_size)
@@ -469,7 +469,7 @@ class StoreWrapper(object):
                     f"Dropped tasks so far: {self._dropped_tasks}. "
                     "Consider increasing max_workers or queue_max_size."
                 )
-            logger.info(f"[Monitor] Queue load: {qsize}/{self.queue_max_size}")
+            logger.debug(f"[Monitor] Queue load: {qsize}/{self.queue_max_size}")
 
     def submit_put_task(self, routing_indices: paddle.Tensor, rollout_id: str, layer_idx: int = None) -> None:
         """Submit a put task to the task queue"""
@@ -482,7 +482,7 @@ class StoreWrapper(object):
         else:
             rdma_rollout_key = rollout_id
 
-        routing_indices_np = np.array(routing_indices.numpy(), copy=True)
+        routing_indices_np = routing_indices.numpy()
 
         task: StoreTask = {"task_type": "put", "key": rdma_rollout_key, "data": routing_indices_np}
 
@@ -556,8 +556,9 @@ class StoreProcess(Process):
         self.max_model_len = max_model_len
         self._task_queue = task_queue
         self.routing_replay_config = routing_replay_config
-        self.max_workers = 1
+        self.max_workers = 5
         self._closed = False
+
         # Note: _routing_store and _event_loop_thread must be initialized in run()
         # because they cannot be properly inherited after fork()
         self._routing_store = None
@@ -578,18 +579,15 @@ class StoreProcess(Process):
         clear_store_task = StoreTask({"task_type": "clear_store", "key": None, "data": None})
         self._task_queue.put_nowait(clear_store_task)
 
-        logger.info(f"[R3] Event loop thread started in subprocess {os.getpid()}")
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             while not self._closed:
                 try:
-                    task = StoreTask(self._task_queue.get())
-                    logger.info(f"[R3] Receive {task['task_type']} task, key: {task['key']}")
+                    task = self._task_queue.get()
                     if task is None:  # Sentinel
                         self._task_queue.task_done()
                         break
 
                     if task["task_type"] == "put":
-                        logger.info(f"[R3] before process put task, key: {task['key']}")
                         future = executor.submit(self.process_put_task, task)
                         future.add_done_callback(lambda f: self._task_queue.task_done())
                     elif task["task_type"] == "clear_store":
@@ -606,6 +604,7 @@ class StoreProcess(Process):
 
     def process_put_task(self, store_task: StoreTask) -> None:
         try:
+            # TODO(gongshaotian): delete this after trainer support dynamic len
             store_task["data"] = self.pad_routing_indices(store_task["data"])
             coro_obj = self._routing_store.put(routing_key=store_task["key"], routing_indices=store_task["data"])
             future = self._event_loop_thread.submit_coroutine(
@@ -645,9 +644,9 @@ class StoreProcess(Process):
         """ """
         try:
             # result = future.result()
-            logger.info(f"[R3] Async task completed: {task['task_type']}, key: {task.get('key')}")
+            logger.info(f"[R3] Async task completed: {task['task_type']}, key: {task['key']}")
         except Exception as e:
-            logger.error(f"[R3] Async task failed: {task['task_type']}, key: {task.get('key')}, error: {e}")
+            logger.error(f"[R3] Async task failed: {task['task_type']}, key: {task['key']}, error: {e}")
             traceback.print_exc()
             raise
 
@@ -660,7 +659,6 @@ class StoreProcess(Process):
     def pad_routing_indices(self, routing_indices: np.ndarray) -> np.ndarray:
         """Pad routing indices of the request levevl to max model len"""
         routing_shape = routing_indices.shape
-        # TODO(gongshaotian): Delete pad func after trainer support dynamic len
         if len(routing_shape) == 2:  # [token, topk]
             pad_array = np.full(
                 shape=[(self.max_model_len - routing_indices.shape[0]), routing_indices.shape[1]],
@@ -725,11 +723,10 @@ class AsyncEventLoopThread(threading.Thread):
                 try:
                     callback(f)
                 except Exception as e:
-                    print(f"Error in callback: {e}")
+                    logger.error(f"Error in callback: {e}")
                     traceback.print_exc()
 
             future.add_done_callback(wrapped_callback)
-            logger.info("coro add callback func")
         return future
 
     def stop(self):
