@@ -359,6 +359,11 @@ class RoutingReplayManager:
 
             logger.info(f"[R3] Submit {request_id} time cost: {time.perf_counter() - before_put_request_time}")
 
+    def clear_request(self, batch_id: int):
+        """Clear the routing indices of the request"""
+        self._clear_table_slot(batch_id)
+        self.routing_batch_to_request.pop(batch_id, None)
+
     def _clear_table_slot(self, batch_id: int):
         assert 0 <= batch_id < self.max_num_seqs
         self.routing_replay_table[batch_id].fill_(-1)
