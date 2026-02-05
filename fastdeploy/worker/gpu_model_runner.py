@@ -2496,19 +2496,11 @@ class GPUModelRunner(ModelRunnerBase):
             self.routing_replay_manager.update_host_cache(positions=self.positions, slot_mapping=slot_mapping)
 
             # Put routing of finished requests to store
-            is_empty_batch = paddle.equal(self.seq_lens_routing_buffer[:, 0], 0)  # 1.empty batch 2. preempted request
-            not_block_chunk_empty = paddle.logical_not(
-                paddle.logical_or(
-                    is_empty_batch,
-                    paddle.logical_or(self.share_inputs["is_block_step"], self.share_inputs["is_chunk_step"]),
-                )
-            )
-            finished_batch_ids = paddle.logical_and(self.share_inputs["stop_flags"][:, 0], not_block_chunk_empty)
+            finished_batch_ids = paddle.isin(sampler_output.sampled_token_ids, self.share_inputs["eos_token_id"])[:, 0]
             self.routing_replay_manager.put_finished_batch(
                 finished_batch_ids=finished_batch_ids,
                 seq_lens_decoder=self.seq_lens_routing_buffer,
             )
-
             paddle.assign(self.share_inputs["seq_lens_decoder"], self.seq_lens_routing_buffer)
 
         return None
