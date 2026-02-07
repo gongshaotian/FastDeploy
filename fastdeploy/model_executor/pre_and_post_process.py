@@ -96,6 +96,9 @@ from fastdeploy.model_executor.entropy_utils import (
     calculate_logits_entropy,
     speculate_calculate_logits_entropy,
 )
+from fastdeploy.model_executor.layers.moe.routing_indices_cache import (
+    RoutingReplayManager,
+)
 from fastdeploy.model_executor.layers.sample.meta_data import SamplingMetadata
 from fastdeploy.output.pooler import PoolerOutput, PoolingSequenceGroupOutput
 from fastdeploy.output.stream_transfer_data import DecoderState, StreamTransferData
@@ -326,6 +329,7 @@ def post_process_normal(
     think_end_id: int = -1,
     line_break_id: int = -1,
     enable_entropy: bool = False,
+    routing_replay_manager: RoutingReplayManager = None,
 ):
     """Post-processing steps after completing a single token generation."""
     if think_end_id > 0:
@@ -393,6 +397,21 @@ def post_process_normal(
 
     if enable_entropy:
         calculate_logits_entropy(sampler_output.logits, share_inputs, sampling_metadata.temperature)
+
+    # Routing replay
+    if routing_replay_manager is not None:
+        # Update host cache
+        slot_mapping = routing_replay_manager.compute_slot_mapping(
+            positions=routing_replay_manager.pending_update_positions
+        )
+        routing_replay_manager.update_host_cache(
+            positions=routing_replay_manager.pending_update_positions, slot_mapping=slot_mapping
+        )
+
+        # Put routing of finished requests to store
+        finished_batch_ids = paddle.isin(sampler_output.sampled_token_ids, model_output.eos_token_id)[:, 0]
+        context_lens = model_output.seq_lens_decoder + model_output.seq_lens_encoder
+        routing_replay_manager.put_finished_batch(finished_batch_ids=finished_batch_ids, seq_lens_decoder=context_lens)
 
     # 2. Update the input buffer of the model
     with paddle.framework._no_check_dy2st_diff():
@@ -564,6 +583,7 @@ def post_process(
     think_end_id: int = -1,
     line_break_id: int = -1,
     enable_entropy: bool = False,
+    routing_replay_manager: RoutingReplayManager = None,
 ) -> None:
     """Post-processing steps after completing a single token generation."""
 
@@ -603,6 +623,7 @@ def post_process(
                 think_end_id,
                 line_break_id,
                 enable_entropy,
+                routing_replay_manager,
             )
 
 
