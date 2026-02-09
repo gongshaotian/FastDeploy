@@ -288,8 +288,6 @@ class RoutingReplayManager:
         seq_lens_decoder,
     ):
         finished_batch_ids_list = finished_batch_ids.cpu().tolist()
-        logger.info(f"[R3] Finished batch id list: {finished_batch_ids_list}")
-        logger.info(f"[R3] batch id to request map: {self.routing_batch_to_request}")
         for batch_id, finished in enumerate(finished_batch_ids_list):
             if finished:
                 assert batch_id in self.routing_batch_to_request.keys()
