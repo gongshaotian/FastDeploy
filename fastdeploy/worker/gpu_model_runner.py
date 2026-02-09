@@ -2628,20 +2628,6 @@ class GPUModelRunner(ModelRunnerBase):
                     self.speculative_config.num_speculative_tokens,
                 )
 
-        # # Routing replay
-        # if self.fd_config.routing_replay_config.enable_routing_replay:
-        #     # Update host cache
-        #     slot_mapping = self.routing_replay_manager.compute_slot_mapping(positions=self.positions)
-        #     self.routing_replay_manager.update_host_cache(positions=self.positions, slot_mapping=slot_mapping)
-
-        #     # Put routing of finished requests to store
-        #     finished_batch_ids = paddle.isin(sampler_output.sampled_token_ids, self.share_inputs["eos_token_id"])[:, 0]
-        #     self.routing_replay_manager.put_finished_batch(
-        #         finished_batch_ids=finished_batch_ids,
-        #         seq_lens_decoder=self.seq_lens_routing_buffer,
-        #     )
-        #     paddle.assign(self.share_inputs["seq_lens_decoder"], self.seq_lens_routing_buffer)
-
         return None
 
     def _pool(self, hidden_states: paddle.Tensor, num_running_requests: int) -> Optional[ModelRunnerOutput]:
