@@ -409,7 +409,7 @@ def post_process_normal(
         )
 
         # Put routing of finished requests to store
-        finished_batch_ids = paddle.isin(sampler_output.sampled_token_ids, model_output.eos_token_id)[:, 0]
+        finished_batch_ids = paddle.flatten(paddle.isin(sampler_output.sampled_token_ids, model_output.eos_token_id))
         context_lens = model_output.seq_lens_decoder + model_output.seq_lens_encoder
         routing_replay_manager.put_finished_batch(finished_batch_ids=finished_batch_ids, seq_lens_decoder=context_lens)
 
