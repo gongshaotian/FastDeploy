@@ -480,7 +480,6 @@ class StoreWrapper(object):
             if qsize > self.queue_max_size * 0.8:
                 logger.warning(
                     f"[Monitor] Queue load is HIGH: {qsize}/{self.queue_max_size}. "
-                    f"Dropped tasks so far: {self._dropped_tasks}. "
                     "Consider increasing max_workers or queue_max_size."
                 )
             logger.debug(f"[Monitor] Queue load: {qsize}/{self.queue_max_size}")
