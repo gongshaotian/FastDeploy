@@ -105,6 +105,8 @@ def send_r3_non_streaming_chat(openai_client, user_id: str = ""):
         user=user_id,  # "rollout_routing_replay_chat_completion_nonstream_test"
     )
 
+    print("\nResponse content: \n", response.choices[0].message.content)
+
     return response
 
 

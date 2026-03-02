@@ -232,8 +232,6 @@ class GPUModelRunner(ModelRunnerBase):
 
         # Rollout routing replay config
         self.routing_replay_manager = None
-        if self.fd_config.routing_replay_config.enable_routing_replay:
-            self.routing_replay_manager = RoutingReplayManager(fd_config=self.fd_config)
 
         self.zmq_client = None
         self.async_output_queue = None
@@ -702,10 +700,6 @@ class GPUModelRunner(ModelRunnerBase):
         req_dict: A list of Request dict
         num_running_requests: batch_size
         """
-        # NOTE(luotingdan): Lazy initialize kv cache
-        if "caches" not in self.share_inputs:
-            self.initialize_kv_cache()
-
         req_len = len(req_dicts)
         has_prefill_task = False
         has_decode_task = False
@@ -835,8 +829,8 @@ class GPUModelRunner(ModelRunnerBase):
 
                 # Routing Replay
                 if self.fd_config.routing_replay_config.enable_routing_replay:
-                    if prefill_start_index == 0:
-                        self.routing_replay_manager.register_request(batch_id=idx, request_id=request.request_id)
+                    # 1.prefix task(need regist) 2. chunkend task(not need regist)
+                    self.routing_replay_manager.register_request(batch_id=idx, request_id=request.request_id)
 
                 if (
                     self.fd_config.scheduler_config.splitwise_role == "decode"
@@ -1771,9 +1765,6 @@ class GPUModelRunner(ModelRunnerBase):
                 # only need to capture prefill
                 break
 
-        if self.fd_config.routing_replay_config.enable_routing_replay:
-            self.routing_replay_manager.clear_routing_table()
-
     @sot_warmup_guard(True)
     def capture_model(self) -> None:
         """
@@ -2006,6 +1997,11 @@ class GPUModelRunner(ModelRunnerBase):
 
         token_num_event = self._prepare_inputs(last_token_num)
         self.sampler.pre_process(p_done_idxs)
+        if self.fd_config.routing_replay_config.enable_routing_replay:
+            self.positions = self.routing_replay_manager.get_token_positions(
+                seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
+                seq_lens_this_time=self.seq_lens_this_time_buffer,
+            )
 
         # 1.1 Update state of logits processor
         for proc in self.sampling_metadata.logits_processors:
@@ -2311,13 +2307,18 @@ class GPUModelRunner(ModelRunnerBase):
         self.exist_prefill_flag = False
         # Routing replay
         if self.fd_config.routing_replay_config.enable_routing_replay:
-            if (
-                not self.exist_prefill()
-                and not self.exist_decode()
-                and self.share_inputs["is_block_step"].sum() == 0
-                and self.share_inputs["is_chunk_step"].sum() == 0
-            ):
-                self.routing_replay_manager.put_table_to_store()
+            # Update host cache
+            slot_mapping = self.routing_replay_manager.compute_slot_mapping(positions=self.positions)
+            self.routing_replay_manager.update_host_cache(positions=self.positions, slot_mapping=slot_mapping)
+
+            # Put routing of finished requests to store
+            finished_batch_ids = paddle.isin(sampler_output.sampled_token_ids, self.share_inputs["eos_token_id"])[:, 0]
+            self.routing_replay_manager.put_finished_batch(
+                finished_batch_ids=finished_batch_ids,
+                seq_lens_decoder=self.share_inputs["seq_lens_routing_buffer"],
+            )
+            paddle.assign(self.share_inputs["seq_lens_decoder"], self.share_inputs["seq_lens_routing_buffer"])
+
         return model_output_data, sampler_output, post_process_event, token_num
 
     def _save_model_output(
@@ -2865,3 +2866,12 @@ class GPUModelRunner(ModelRunnerBase):
             del self.prompt_logprobs_reqs[req.request_id]
             del self.in_progress_prompt_logprobs[req.request_id]
         return prompt_logprobs_list
+
+    def initialize_routing_replay_manager(self):
+        """Initialize the routing replay manager after initialize the KVCache"""
+        # Use updated block number
+        self.routing_replay_manager = RoutingReplayManager(
+            fd_config=self.fd_config,
+            block_table=self.share_inputs["block_tables"],
+            total_block_num=self.num_gpu_blocks,
+        )
