@@ -1433,6 +1433,9 @@ class RouterConfig:
         self.api_server_host = get_host_ip()
         self.api_server_port = args["port"]
 
+    def __str__(self):
+        return json.dumps({key: value for key, value in self.__dict__.items()})
+
 
 class CommitConfig:
     """
