@@ -162,6 +162,7 @@ class RoutingReplayManager:
         self.num_moe_layers = fd_config.model_config.num_hidden_layers - fd_config.model_config.moe_layer_start_index
         self.only_last_turn = fd_config.routing_replay_config.only_last_turn
         self.use_fused_put = fd_config.routing_replay_config.use_fused_put
+        logger.info(f"[R3] Rollout Routing Replay Congfig: {fd_config.routing_replay_config}")
         if fd_config.model_config.architectures[0] == "Glm4MoeForCausalLM":
             self.moe_top_k = fd_config.model_config.num_experts_per_tok
         else:

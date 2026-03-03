@@ -1546,6 +1546,9 @@ class RoutingReplayConfig:
         """
         return json.dumps({key: value for key, value in self.__dict__.items()})
 
+    def __str__(self):
+        return self.to_json_string()
+
 
 class FDConfig:
     """
