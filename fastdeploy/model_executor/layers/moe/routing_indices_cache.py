@@ -183,6 +183,17 @@ class RoutingReplayManager:
             )
             self._store_wrapper.start_store_warpper()
 
+        # Suspend Routing Replay
+        self.suspend_routing_replay = False
+        self.update_suspend_routing_replay()
+
+    def update_suspend_routing_replay(self):
+        """Allow RL to use R3 in different training rounds"""
+        # TODO(gongshaotian): Delete this func
+        suspend_routing_replay = os.environ.get("FD_SUSPEND_ROUTING_REPLAY", "0")
+        self.suspend_routing_replay = bool(int(suspend_routing_replay))
+        logger.info(f"[R3] Update FD_SUSPEND_ROUTING_REPLAY: {self.suspend_routing_replay}")
+
     def _init_routing_cache(self, dtype: str, total_block_num: int):
         """Initialize the device buffer and host buffer."""
 
@@ -338,6 +349,11 @@ class RoutingReplayManager:
         seq_lens_decoder,
     ):
         if self.tp_rank == 0:
+            # TODO(gongshaotian): Delete the suspend func
+            if self.suspend_routing_replay:
+                logger.info(f"[R3] Suspend Routing Replay is enabled, skip putting request {request_id} to store")
+                return
+
             before_put_request_time = time.perf_counter()
 
             # Collect the routing of finished request
