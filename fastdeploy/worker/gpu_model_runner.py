@@ -2065,7 +2065,7 @@ class GPUModelRunner(ModelRunnerBase):
         if self.fd_config.routing_replay_config.enable_routing_replay:
             self.routing_replay_manager.pending_update_positions = self.routing_replay_manager.get_token_positions(
                 seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
-                seq_lens_this_time=self.seq_lens_this_time_buffer,
+                seq_lens_this_time=self.share_inputs["seq_lens_this_time_buffer"],
             )
 
         # 1.1 Update state of logits processor
