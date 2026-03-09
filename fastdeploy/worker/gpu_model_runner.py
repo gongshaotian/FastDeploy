@@ -2283,7 +2283,7 @@ class GPUModelRunner(ModelRunnerBase):
         token_num_event = self._prepare_inputs(last_token_num)
         self.sampler.pre_process(p_done_idxs)
         if self.fd_config.routing_replay_config.enable_routing_replay:
-            self.positions = self.routing_replay_manager.get_token_positions(
+            self.routing_replay_manager.pending_update_positions = self.routing_replay_manager.get_token_positions(
                 seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
                 seq_lens_this_time=self.seq_lens_this_time_buffer,
             )
@@ -2387,6 +2387,7 @@ class GPUModelRunner(ModelRunnerBase):
                 skip_save_output=False,
                 async_output_queue=self.async_output_queue,
                 enable_entropy=self.enable_entropy and self.parallel_config.tensor_parallel_rank == 0,
+                routing_replay_manager=self.routing_replay_manager,
             )
             self.share_inputs["not_need_stop"].copy_(self.share_inputs["not_need_stop_device"], True)
 
@@ -2520,6 +2521,7 @@ class GPUModelRunner(ModelRunnerBase):
                 think_end_id=self.model_config.think_end_id,
                 splitwise_role_is_decode=self.scheduler_config.splitwise_role == "decode",
                 enable_entropy=self.enable_entropy and self.parallel_config.tensor_parallel_rank == 0,
+                routing_replay_manager=self.routing_replay_manager,
             )
 
             if self.guided_backend is not None and sampler_output is not None:
@@ -2575,20 +2577,6 @@ class GPUModelRunner(ModelRunnerBase):
                 post_process_event.record()
 
         self.exist_prefill_flag = False
-        # Routing replay
-        if self.fd_config.routing_replay_config.enable_routing_replay:
-            # Update host cache
-            slot_mapping = self.routing_replay_manager.compute_slot_mapping(positions=self.positions)
-            self.routing_replay_manager.update_host_cache(positions=self.positions, slot_mapping=slot_mapping)
-
-            # Put routing of finished requests to store
-            finished_batch_ids = paddle.isin(sampler_output.sampled_token_ids, self.share_inputs["eos_token_id"])[:, 0]
-            self.routing_replay_manager.put_finished_batch(
-                finished_batch_ids=finished_batch_ids,
-                seq_lens_decoder=self.share_inputs["seq_lens_routing_buffer"],
-            )
-            paddle.assign(self.share_inputs["seq_lens_decoder"], self.share_inputs["seq_lens_routing_buffer"])
-
         return model_output_data, sampler_output, post_process_event, token_num
 
     def _save_model_output(
