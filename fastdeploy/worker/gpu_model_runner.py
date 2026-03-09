@@ -2574,6 +2574,10 @@ class GPUModelRunner(ModelRunnerBase):
         if self.fd_config.routing_replay_config.enable_routing_replay:
             self.routing_replay_manager.put_table_to_store()
 
+        # Routing Replay
+        if self.routing_replay_manager:
+            self.routing_replay_manager.clear_all_request()
+
     def update_parameters(self, pid):
         """Dynamic model loader use to update parameters use for RL"""
         # Update parameters
