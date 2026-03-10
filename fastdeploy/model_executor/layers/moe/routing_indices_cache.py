@@ -230,8 +230,8 @@ class RoutingReplayManager:
 
     def get_token_positions(self, seq_lens_decoder, seq_lens_this_time):
         """Get token position of each sequence in a batch."""
-        starts = seq_lens_decoder.numpy()[:, 0]
-        increase_num = seq_lens_this_time.numpy()[:, 0]
+        starts = seq_lens_decoder.numpy()
+        increase_num = seq_lens_this_time.numpy()
 
         positions = []
         for i in range(self.max_num_seqs):
@@ -266,7 +266,7 @@ class RoutingReplayManager:
             2. clear parameter: after update input, lens = seq_lens_decoder_buffer
         """
         # Get the slot mapping of the request cache.
-        current_token_nums = seq_lens_decoder.numpy()[:, 0]
+        current_token_nums = seq_lens_decoder.numpy()
         positions = []
         for batch_id in range(self.max_num_seqs):
             position = []
