@@ -228,8 +228,9 @@ class GPUModelRunner(ModelRunnerBase):
         self.zmq_client = None
         self.async_output_queue = None
         if envs.FD_USE_GET_SAVE_OUTPUT_V1:
-            logger.info(f"zmq client get_save_output_rank{local_rank}")
-            self.zmq_client = ZmqIpcClient(name=f"get_save_output_rank{local_rank}", mode=zmq.PUSH)
+            port = self.fd_config.parallel_config.local_engine_worker_queue_port
+            logger.info(f"zmq client get_save_output_rank{local_rank}_{port}")
+            self.zmq_client = ZmqIpcClient(name=f"get_save_output_rank{local_rank}_{port}", mode=zmq.PUSH)
             self.zmq_client.connect()
             self.zmq_client.socket.SNDTIMEO = 3000
             self.async_output_queue: queue.Queue = queue.Queue()
@@ -811,6 +812,13 @@ class GPUModelRunner(ModelRunnerBase):
                 ):  # In PD, we continue to decode after P generate first token
                     self.share_inputs["seq_lens_encoder"][idx : idx + 1] = 0
                     self.exist_prefill_flag = False
+                    if self.speculative_decoding:
+                        # D speculate decode, seq_lens_this_time = length + 1
+                        self.share_inputs["seq_lens_this_time"][idx : idx + 1] = length + 1
+                        self.share_inputs["draft_tokens"][idx : idx + 1, 0 : length + 1] = paddle.to_tensor(
+                            request.draft_token_ids[0 : length + 1],
+                            dtype="int64",
+                        )
             elif request.task_type.value == RequestType.DECODE.value:  # decode task
                 logger.debug(f"Handle decode request {request} at idx {idx}")
                 encoder_block_num = len(request.block_tables)
