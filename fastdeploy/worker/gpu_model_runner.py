@@ -1971,9 +1971,6 @@ class GPUModelRunner(ModelRunnerBase):
                 # only need to capture prefill
                 break
 
-        if self.fd_config.routing_replay_config.enable_routing_replay:
-            self.routing_replay_manager.clear_routing_table()
-
     def _update_chunked_prefill(self, tasks):
         """
         Update chunked prefill related parameters
