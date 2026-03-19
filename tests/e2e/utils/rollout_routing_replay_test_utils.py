@@ -48,7 +48,7 @@ def calculate_routing_ratio(expected_routing: paddle.Tensor, actual_routing: pad
 
 
 def get_real_routing_length(routing: paddle.Tensor) -> int:
-    mask = routing == -1
+    mask = routing == 255
     mask_float = mask.astype(paddle.float32)
     row_has_true = paddle.any(mask_float, axis=1).astype(paddle.float32)
 
