@@ -25,8 +25,8 @@ def calculate_routing_ratio(expected_routing: paddle.Tensor, actual_routing: pad
     ), f"Routing real lengths do not match. Expected length {expected_routing_length} actual length {actual_routing_length}."
     total_rows, elements_per_row = expected_routing.shape
 
-    mask1 = paddle.any(expected_routing != -1, axis=1)
-    mask2 = paddle.any(actual_routing != -1, axis=1)
+    mask1 = paddle.any(expected_routing != 255, axis=1)
+    mask2 = paddle.any(actual_routing != 255, axis=1)
     valid_mask = mask1 & mask2
 
     if paddle.sum(valid_mask.cast("int32")) == 0:
