@@ -129,7 +129,15 @@ def parse_args():
     )
     parser.add_argument("--model_path", type=str, help="The path of model")
 
+    # Routing replay (R3) arguments
+    parser.add_argument("--enable_routing_replay", type=int, default=0, help="Enable routing replay")
+    parser.add_argument("--routing_num_moe_layers", type=int, default=0, help="Number of MoE layers for routing")
+    parser.add_argument("--routing_moe_top_k", type=int, default=0, help="MoE top_k for routing")
+    parser.add_argument("--routing_dtype", type=str, default="uint8", help="Routing data dtype")
+
     args = parser.parse_args()
+    # Convert int flag to bool
+    args.enable_routing_replay = bool(args.enable_routing_replay)
     return args
 
 
@@ -241,6 +249,13 @@ class CacheTransferManager:
             self._init_cpu_cache()
         if self.storage_backend_type is not None:
             self._init_storage(args)
+
+        # Initialize auxiliary data specs (e.g., routing replay)
+        self.aux_data_specs = {}
+        self.routing_host_view = None
+        self.routing_swap_buffer = None
+        self._init_routing_aux_data(args)
+
         self._init_control()
 
         cache_task_broadcast_data = np.zeros(shape=[1], dtype=np.int32)
@@ -306,6 +321,162 @@ class CacheTransferManager:
             create=False,
         )
         self.cache_transfer_inited_signal.value[self.rank] = 1
+
+    def _init_routing_aux_data(self, args):
+        """Initialize routing auxiliary data buffers for swap sync."""
+        enable_routing_replay = getattr(args, "enable_routing_replay", False)
+        if not enable_routing_replay:
+            return
+
+        try:
+            from fastdeploy.cache_manager.cache_data import AuxBlockDataSpec
+            from fastdeploy.model_executor.layers.moe.routing_indices_cache import (
+                RoutingHostBufferView,
+                RoutingSwapBuffer,
+            )
+
+            num_moe_layers = getattr(args, "routing_num_moe_layers", 0)
+            moe_top_k = getattr(args, "routing_moe_top_k", 0)
+            routing_dtype = getattr(args, "routing_dtype", "uint8")
+
+            if num_moe_layers == 0 or moe_top_k == 0:
+                return
+
+            spec = AuxBlockDataSpec(
+                name="routing",
+                num_layers=num_moe_layers,
+                per_token_size=moe_top_k,
+                block_size=self.block_size,
+                dtype=routing_dtype,
+            )
+
+            # Create routing swap buffer (for CPU blocks)
+            if self.num_cpu_blocks > 0:
+                dp_suffix = str(getattr(args, "engine_worker_queue_port", ""))
+                self.routing_swap_buffer = RoutingSwapBuffer(
+                    num_cpu_blocks=self.num_cpu_blocks,
+                    block_size=self.block_size,
+                    num_moe_layers=num_moe_layers,
+                    top_k=moe_top_k,
+                    dtype=routing_dtype,
+                    dp_suffix=dp_suffix,
+                )
+                spec.swap_buffer = self.routing_swap_buffer
+
+            # Attach to routing host buffer (SharedMemory created by Engine)
+            dp_suffix = str(getattr(args, "engine_worker_queue_port", ""))
+            shm_name = f"routing_host_buffer.{dp_suffix}"
+            max_num_kv_tokens = self.num_gpu_blocks * self.block_size
+            shape = (max_num_kv_tokens, num_moe_layers, moe_top_k)
+            try:
+                self.routing_host_view = RoutingHostBufferView(shape=shape, dtype=routing_dtype, shm_name=shm_name)
+                logger.info(f"[R3] CTM attached to RoutingHostBuffer: {shm_name}")
+            except FileNotFoundError:
+                logger.warning(f"[R3] CTM RoutingHostBuffer {shm_name} not found")
+
+            self.aux_data_specs["routing"] = spec
+            logger.info(f"[R3] CTM registered routing aux data: layers={num_moe_layers}, top_k={moe_top_k}")
+
+        except Exception as e:
+            logger.warning(f"[R3] CTM failed to init routing aux data: {e}")
+
+    def _swap_routing(self, gpu_block_ids, cpu_block_ids, direction):
+        """
+        Swap routing data between routing_host_buffer and routing_swap_buffer.
+        Pure CPU-to-CPU numpy memcpy, no GPU DMA.
+        """
+        if self.routing_host_view is None or self.routing_swap_buffer is None:
+            return
+        bs = self.block_size
+        for gpu_bid, cpu_bid in zip(gpu_block_ids, cpu_block_ids):
+            gpu_start = gpu_bid * bs
+            gpu_end = gpu_start + bs
+            cpu_start = cpu_bid * bs
+            cpu_end = cpu_start + bs
+            if direction == "to_cpu":
+                self.routing_swap_buffer.buffer[cpu_start:cpu_end] = self.routing_host_view.buffer[gpu_start:gpu_end]
+            else:  # to_gpu
+                self.routing_host_view.buffer[gpu_start:gpu_end] = self.routing_swap_buffer.buffer[cpu_start:cpu_end]
+
+    def _write_routing_to_storage(self, task_keys, gpu_block_ids):
+        """
+        Write routing data from routing_host_buffer to storage backend.
+        Only for mooncake/file backends; only tp_rank=0 writes routing.
+        """
+        if self.routing_host_view is None or self.rank != 0:
+            return
+        if self.storage_backend_type not in ("mooncake", "file"):
+            return
+
+        try:
+            spec = self.aux_data_specs.get("routing")
+            if spec is None or not spec.enabled:
+                return
+
+            bs = self.block_size
+            routing_keys = []
+            routing_ptrs = []
+            routing_sizes = []
+            per_block_bytes = bs * spec.num_layers * spec.per_token_size * np.dtype(spec.dtype).itemsize
+
+            for block_hash, gpu_bid in zip(task_keys, gpu_block_ids):
+                key = spec.get_storage_key(self.key_prefix, block_hash, self.rank)
+                start = gpu_bid * bs
+                end = start + bs
+                block_data = self.routing_host_view.buffer[start:end]
+                if not block_data.flags["C_CONTIGUOUS"]:
+                    block_data = np.ascontiguousarray(block_data)
+                routing_keys.append(key)
+                routing_ptrs.append(block_data.ctypes.data)
+                routing_sizes.append(per_block_bytes)
+
+            if routing_keys:
+                self.storage_backend.batch_set(
+                    keys=routing_keys, target_locations=routing_ptrs, target_sizes=routing_sizes
+                )
+                logger.debug(f"[R3] Wrote {len(routing_keys)} routing blocks to storage")
+        except Exception as e:
+            logger.warning(f"[R3] Failed to write routing to storage: {e}")
+
+    def _read_routing_from_storage(self, task_keys, gpu_block_ids):
+        """
+        Read routing data from storage backend into routing_host_buffer.
+        Only for mooncake/file backends; only tp_rank=0 reads routing.
+        """
+        if self.routing_host_view is None or self.rank != 0:
+            return
+        if self.storage_backend_type not in ("mooncake", "file"):
+            return
+
+        try:
+            spec = self.aux_data_specs.get("routing")
+            if spec is None or not spec.enabled:
+                return
+
+            bs = self.block_size
+            per_block_bytes = bs * spec.num_layers * spec.per_token_size * np.dtype(spec.dtype).itemsize
+
+            for block_hash, gpu_bid in zip(task_keys, gpu_block_ids):
+                key = spec.get_storage_key(self.key_prefix, block_hash, self.rank)
+                start = gpu_bid * bs
+                end = start + bs
+                target_slice = self.routing_host_view.buffer[start:end]
+                if not target_slice.flags["C_CONTIGUOUS"]:
+                    # Need contiguous target for ctypes pointer
+                    tmp = np.ascontiguousarray(target_slice)
+                    result = self.storage_backend.get(
+                        key=key, target_location=tmp.ctypes.data, target_size=per_block_bytes
+                    )
+                    if result is not None and result >= 0:
+                        self.routing_host_view.buffer[start:end] = tmp
+                else:
+                    self.storage_backend.get(
+                        key=key, target_location=target_slice.ctypes.data, target_size=per_block_bytes
+                    )
+
+            logger.debug(f"[R3] Read {len(task_keys)} routing blocks from storage")
+        except Exception as e:
+            logger.warning(f"[R3] Failed to read routing from storage: {e}")
 
     def _init_control(self):
         dp_rank = self.local_data_parallel_id
@@ -809,6 +980,9 @@ class CacheTransferManager:
                     logger.info(
                         f"Successfully read {len(valid_gpu_block_ids)} blocks from cache storage for task {task.task_id}"
                     )
+                    # Read routing data from storage for matched blocks
+                    matched_keys = task.keys[: len(valid_gpu_block_ids)]
+                    self._read_routing_from_storage(matched_keys, valid_gpu_block_ids)
                 except Exception as e:
                     logger.error(
                         f"Failed to read cache for task {task.task_id}, error: {e}, traceback: {traceback.format_exc()}"
@@ -1000,6 +1174,9 @@ class CacheTransferManager:
                     logger.info(
                         f"Successfully wrote {write_block_num} blocks to cache storage for task {task.task_id}"
                     )
+                    # Write routing data to storage (shares dedup with KVCache)
+                    remaining_keys = task.keys[match_block_num:]
+                    self._write_routing_to_storage(remaining_keys, gpu_block_ids)
                 except Exception as e:
                     logger.error(f"Error in write back storage task: {e}, traceback:{traceback.format_exc()}")
                     gpu_block_ids = []
@@ -1375,6 +1552,10 @@ class CacheTransferManager:
                         0,
                     )
 
+                # Routing: routing_host_buffer → routing_swap_buffer
+                if "routing" in self.aux_data_specs:
+                    self._swap_routing(gpu_block_ids, cpu_block_ids, "to_cpu")
+
             elif event_type.value == CacheStatus.SWAP2GPU.value:
                 swap_cache_all_layers(
                     self.gpu_cache_k_tensors,
@@ -1413,6 +1594,11 @@ class CacheTransferManager:
                         self.device,
                         1,
                     )
+
+                # Routing: routing_swap_buffer → routing_host_buffer
+                if "routing" in self.aux_data_specs:
+                    self._swap_routing(gpu_block_ids, cpu_block_ids, "to_gpu")
+
             else:
                 logger.warning(
                     f"transfer data: Get unexpected event type {event_type}, only SWAP2CPU and SWAP2GPU supported"

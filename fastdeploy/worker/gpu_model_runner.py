@@ -1455,8 +1455,10 @@ class GPUModelRunner(ModelRunnerBase):
         """
         # Initialize forward meta
         routing_replay_table = None
+        gpu_routing_buffer = None
         if self.routing_replay_manager is not None:
             routing_replay_table = self.routing_replay_manager.get_routing_table()
+            gpu_routing_buffer = self.routing_replay_manager.get_gpu_routing_buffer()
         self.forward_meta = ForwardMeta(
             ids_remove_padding=self.share_inputs["ids_remove_padding"],
             rotary_embs=self.share_inputs["rope_emb"],
@@ -1484,6 +1486,7 @@ class GPUModelRunner(ModelRunnerBase):
             kv_tile_ids_per_batch=self.share_inputs["kv_tile_ids_per_batch"],
             kv_num_blocks_x_cpu=self.share_inputs["kv_num_blocks_x_cpu"],
             routing_replay_table=routing_replay_table,
+            gpu_routing_buffer=gpu_routing_buffer,
         )
 
         dist_status = self.collect_distributed_status()

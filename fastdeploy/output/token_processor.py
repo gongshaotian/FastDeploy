@@ -131,6 +131,73 @@ class TokenProcessor:
         self.health_lock = threading.Lock()
         self.engine_output_token_hang = False
 
+        # Routing replay: attach to SharedMemory routing_host_buffer (lazy init after profiling)
+        self.routing_host_view = None
+        self._routing_host_view_init_attempted = False
+
+    def _init_routing_host_view(self):
+        """Attach to SharedMemory routing_host_buffer created by Engine. Called lazily."""
+        self._routing_host_view_init_attempted = True
+        if not self.cfg.routing_replay_config.enable_routing_replay:
+            return
+        try:
+            from fastdeploy.model_executor.layers.moe.routing_indices_cache import (
+                RoutingHostBufferView,
+            )
+
+            model_config = self.cfg.model_config
+            cache_config = self.cfg.cache_config
+            num_moe_layers = model_config.num_hidden_layers - model_config.moe_layer_start_index
+            if model_config.architectures[0] == "Glm4MoeForCausalLM":
+                moe_top_k = model_config.num_experts_per_tok
+            else:
+                moe_top_k = model_config.moe_k
+            num_experts = model_config.moe_num_experts + model_config.moe_num_shared_experts
+            dtype = "uint8" if num_experts + 1 <= 255 else ("uint16" if num_experts + 1 <= 65535 else "uint32")
+
+            dp_suffix = str(self.cfg.parallel_config.local_engine_worker_queue_port)
+            shm_name = f"routing_host_buffer.{dp_suffix}"
+            num_gpu_blocks = cache_config.total_block_num
+            max_num_kv_tokens = num_gpu_blocks * cache_config.block_size
+            shape = (max_num_kv_tokens, num_moe_layers, moe_top_k)
+
+            self.routing_host_view = RoutingHostBufferView(shape=shape, dtype=dtype, shm_name=shm_name)
+            self._routing_block_size = cache_config.block_size
+            self._routing_num_moe_layers = num_moe_layers
+            self._routing_moe_top_k = moe_top_k
+            llm_logger.info(f"[R3] TokenProcessor attached to RoutingHostBuffer: {shm_name}")
+        except FileNotFoundError:
+            llm_logger.warning("[R3] RoutingHostBuffer SharedMemory not found, routing gather disabled.")
+        except Exception as e:
+            llm_logger.warning(f"[R3] Failed to attach to RoutingHostBuffer: {e}")
+
+    def _gather_routing_for_finished_request(self, task, seq_len: int):
+        """
+        Gather complete routing data for a finished request from routing_host_buffer.
+
+        Args:
+            task: Request task with block_tables
+            seq_len: Total sequence length
+
+        Returns:
+            numpy array [seq_len, num_moe_layers, top_k] or None
+        """
+        if self.routing_host_view is None and not self._routing_host_view_init_attempted:
+            self._init_routing_host_view()
+        if self.routing_host_view is None:
+            return None
+
+        import math
+
+        block_size = self._routing_block_size
+        block_ids = task.block_tables[: math.ceil(seq_len / block_size)]
+        positions = np.arange(seq_len)
+        block_indices = positions // block_size
+        offsets = positions % block_size
+        slot_mapping = np.array(block_ids)[block_indices] * block_size + offsets
+
+        return self.routing_host_view.gather(slot_mapping)
+
     def healthy(self):
         """
         whether token processor is healthy
@@ -516,6 +583,20 @@ class TokenProcessor:
         """
         recycle resources
         """
+        # Gather routing data before blocks are recycled (blocks will be freed below)
+        if result is not None and result.finished and self.cfg.routing_replay_config.enable_routing_replay:
+            try:
+                seq_len = (
+                    task.prompt_token_ids_len + len(task.output_token_ids)
+                    if hasattr(task, "output_token_ids")
+                    else task.prompt_token_ids_len
+                )
+                routing_data = self._gather_routing_for_finished_request(task, seq_len)
+                if routing_data is not None:
+                    result.routing_data = routing_data
+            except Exception as e:
+                llm_logger.warning(f"[R3] Failed to gather routing for {task_id}: {e}")
+
         if is_prefill:
             start_time = time.time()
             result.metrics.wait_for_sending_cache_time = time.time()
@@ -533,6 +614,15 @@ class TokenProcessor:
                         f"wait for sending cache, request_id: {task_id}, cost seconds: {time.time()-start_time:.5f}"
                     )
                     result.metrics.send_request_output_to_decode_time = time.time()
+                    # [R3] Gather prefill routing data before sending to D
+                    if self.cfg.routing_replay_config.enable_routing_replay and result.error_code == 200:
+                        try:
+                            seq_len = task.prompt_token_ids_len
+                            routing_data = self._gather_routing_for_finished_request(task, seq_len)
+                            if routing_data is not None:
+                                result.routing_data = routing_data
+                        except Exception as e:
+                            llm_logger.warning(f"[R3] Failed to gather prefill routing for {task_id}: {e}")
                     self.split_connector.send_first_token(task.disaggregate_info, [result])
                     if envs.ENABLE_V1_KVCACHE_SCHEDULER:
                         self.resource_manager.finish_requests_async(task_id)

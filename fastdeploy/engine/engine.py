@@ -725,6 +725,11 @@ class LLMEngine:
         num_gpu_blocks = self.get_profile_block_num_signal.value[0]
         self.cfg.cache_config.reset(num_gpu_blocks)
         self.engine.resource_manager.reset_cache_config(self.cfg.cache_config)
+
+        # Create RoutingHostBuffer (SharedMemory) before starting cache service
+        if self.cfg.routing_replay_config.enable_routing_replay:
+            self.engine._init_routing_host_buffer(num_gpu_blocks)
+
         if self.cfg.cache_config.enable_prefix_caching or self.cfg.scheduler_config.splitwise_role != "mixed":
             if not current_platform.is_intel_hpu():
                 device_ids = self.cfg.parallel_config.device_ids.split(",")

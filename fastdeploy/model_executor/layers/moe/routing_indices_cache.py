@@ -18,6 +18,7 @@ import asyncio
 import atexit
 import functools
 import multiprocessing
+import multiprocessing.shared_memory
 import os
 import shutil
 import threading
@@ -155,6 +156,72 @@ def save_routing_to_buffer(
     )
 
 
+@enable_compat_on_triton_kernel
+@triton.jit
+def _save_routing_kernel_v2(
+    GPU_ROUTING_BUFFER_PTR,
+    TOPK_IDS_PTR,
+    LAYER_IDX,
+    TOKEN_NUM,
+    TOP_K,
+    NUM_MOE_LAYERS,
+    BLOCK_SIZE_M: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+):
+    pid_m = tl.program_id(axis=0)
+    token_offsets = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    token_mask = token_offsets < TOKEN_NUM
+    k_offsets = tl.arange(0, BLOCK_SIZE_K)
+    k_mask = k_offsets < TOP_K
+
+    load_mask = token_mask[:, None] & k_mask[None, :]
+    topk_vals = tl.load(
+        TOPK_IDS_PTR + token_offsets[:, None] * TOP_K + k_offsets[None, :],
+        mask=load_mask,
+    )
+
+    STRIDE_TOKEN = NUM_MOE_LAYERS * TOP_K
+    STRIDE_LAYER = TOP_K
+    output_ptrs = (
+        GPU_ROUTING_BUFFER_PTR + token_offsets[:, None] * STRIDE_TOKEN + LAYER_IDX * STRIDE_LAYER + k_offsets[None, :]
+    )
+    tl.store(output_ptrs, topk_vals, mask=load_mask)
+
+
+def save_routing_to_buffer_v2(
+    gpu_routing_buffer: paddle.Tensor,
+    topk_ids: paddle.Tensor,
+    layer_idx: int,
+    tp_size: int,
+    ep_size: int,
+    tp_group: dist.communication.group.Group,
+):
+    token_num_per_rank = topk_ids.shape[0]
+    if token_num_per_rank == 0:
+        return
+    if tp_size > 1 and ep_size > 1:
+        topk_ids_all = paddle.zeros([token_num_per_rank * tp_size, topk_ids.shape[1]], dtype=topk_ids.dtype)
+        paddle.distributed.all_gather(topk_ids_all, topk_ids, tp_group)
+        topk_ids = topk_ids_all[:token_num_per_rank, :]
+
+    token_num, top_k = topk_ids.shape
+    num_moe_layers = gpu_routing_buffer.shape[1]
+
+    BLOCK_SIZE_M = 128
+    BLOCK_SIZE_K = triton.next_power_of_2(top_k)
+    grid = (triton.cdiv(token_num, BLOCK_SIZE_M),)
+    _save_routing_kernel_v2[grid](
+        gpu_routing_buffer,
+        topk_ids,
+        LAYER_IDX=layer_idx,
+        TOKEN_NUM=token_num,
+        TOP_K=top_k,
+        NUM_MOE_LAYERS=num_moe_layers,
+        BLOCK_SIZE_M=BLOCK_SIZE_M,
+        BLOCK_SIZE_K=BLOCK_SIZE_K,
+    )
+
+
 class RoutingReplayManager:
     """Request level routing replay table manager"""
 
@@ -203,17 +270,38 @@ class RoutingReplayManager:
 
         max_num_kv_tokens = total_block_num * self.fd_config.cache_config.block_size
 
+        # Legacy host cache (kept during transition, will be replaced by SharedMemory routing_host_buffer)
         self._host_cache = paddle.full(
             shape=[max_num_kv_tokens, self.num_moe_layers, self.moe_top_k], fill_value=-1, dtype=dtype, device="cpu"
         )
 
-        self.routing_replay_table = paddle.full(
-            shape=[self.max_num_seqs, self.max_model_len, self.num_moe_layers, self.moe_top_k],
+        # Phase 2: Small GPU transient buffer (replaces the old routing_replay_table)
+        max_num_batched_tokens = self.fd_config.scheduler_config.max_num_batched_tokens
+        self.gpu_routing_buffer = paddle.full(
+            shape=[max_num_batched_tokens, self.num_moe_layers, self.moe_top_k],
             fill_value=-1,
             dtype=dtype,
         )
+
+        # Legacy routing_replay_table kept as alias for backward compatibility during transition
+        self.routing_replay_table = self.gpu_routing_buffer
+
+        # Lazy attach to SharedMemory routing_host_buffer (created by Engine in _stop_profile)
+        # Engine creates SharedMemory after profiling completes, which is after Worker init.
+        # So we defer attachment to the first save_captured_routing() call.
+        self.routing_host_view = None
+        self._routing_host_view_attach_attempted = False
+        self._routing_host_view_shm_name = (
+            f"routing_host_buffer.{str(self.fd_config.parallel_config.local_engine_worker_queue_port)}"
+        )
+        self._routing_host_view_shape = (max_num_kv_tokens, self.num_moe_layers, self.moe_top_k)
+        self._routing_host_view_dtype = dtype
+
+        gpu_buffer_bytes = int(np.prod(self.gpu_routing_buffer.shape)) * np.dtype(dtype).itemsize
         logger.info(
-            f"[R3] The host cache size is:{self._host_cache.shape}, device cache size is: {self.routing_replay_table.shape}"
+            f"[R3] GPU transient routing buffer: {self.gpu_routing_buffer.shape} "
+            f"({gpu_buffer_bytes / 1024:.1f} KB), "
+            f"host cache: {self._host_cache.shape}"
         )
 
     def get_routing_dtype(self, num_experts: int, reserved_fill_value: int = 1) -> str:
@@ -236,13 +324,76 @@ class RoutingReplayManager:
         return dtype
 
     def update_host_cache(self, positions: paddle.Tensor, slot_mapping: paddle.Tensor):
-        """Update the host cache with new tokens"""
+        """Update the host cache with new tokens (legacy v1 path)"""
         for batch_id, position in enumerate(positions):
             if len(position) > 0 and len(slot_mapping[batch_id]) > 0:
                 routing_ids = self.routing_replay_table[batch_id, position, :, :].contiguous()
                 routing_ids = routing_ids.cpu()
 
                 self._host_cache[slot_mapping[batch_id], :, :] = routing_ids
+
+    def _try_attach_routing_host_view(self):
+        """Lazily attach to SharedMemory routing_host_buffer on first use."""
+        if self._routing_host_view_attach_attempted:
+            return
+        self._routing_host_view_attach_attempted = True
+        try:
+            self.routing_host_view = RoutingHostBufferView(
+                shape=self._routing_host_view_shape,
+                dtype=self._routing_host_view_dtype,
+                shm_name=self._routing_host_view_shm_name,
+            )
+            logger.info(f"[R3] Attached to RoutingHostBuffer SharedMemory: {self._routing_host_view_shm_name}")
+        except FileNotFoundError:
+            logger.warning(
+                f"[R3] RoutingHostBuffer SharedMemory {self._routing_host_view_shm_name} not found. "
+                "Falling back to legacy _host_cache (no swap sync)."
+            )
+
+    def save_captured_routing(self, num_tokens: int, slot_mapping: np.ndarray):
+        """
+        After forward, scatter GPU buffer routing data to routing_host_buffer.
+        Called in step gap (post_process), not during forward. CUDAGraph compatible.
+
+        Args:
+            num_tokens: Number of tokens processed in the current step
+            slot_mapping: [num_tokens], each token's routing_host_buffer slot index
+        """
+        if num_tokens == 0:
+            return
+
+        # Lazy attach to SharedMemory (Engine creates it after profiling completes)
+        if self.routing_host_view is None and not self._routing_host_view_attach_attempted:
+            self._try_attach_routing_host_view()
+
+        # D2H copy: GPU → CPU numpy
+        data = self.gpu_routing_buffer[:num_tokens].cpu().numpy()
+
+        if self.routing_host_view is not None:
+            # Phase 2: scatter to SharedMemory routing_host_buffer
+            self.routing_host_view.scatter(slot_mapping, data)
+        else:
+            # Fallback: scatter to legacy _host_cache
+            self._host_cache[slot_mapping, :, :] = paddle.to_tensor(data, place="cpu")
+
+    def compute_slot_mapping_flat(self, positions) -> np.ndarray:
+        """
+        Compute flat slot_mapping for all tokens in the step.
+        Returns a 1D numpy array of slot indices.
+        """
+        all_slots = []
+        block_size = self.fd_config.cache_config.block_size
+        for batch_id, position in enumerate(positions):
+            if len(position) == 0:
+                continue
+            block_table_indices = position // block_size
+            token_block_ids = self.block_table[batch_id, block_table_indices]
+            block_offset = position % block_size
+            token_cache_ids = np.array(token_block_ids) * block_size + block_offset
+            all_slots.append(token_cache_ids)
+        if all_slots:
+            return np.concatenate(all_slots)
+        return np.array([], dtype=np.int64)
 
     def get_token_positions(self, seq_lens_decoder, seq_lens_this_time):
         """Get token position of each sequence in a batch."""
@@ -386,15 +537,19 @@ class RoutingReplayManager:
 
     def clear_request(self, batch_id: int):
         """Clear the routing indices of the request"""
-        self._clear_table_slot(batch_id)
+        # With gpu_routing_buffer (v2), no per-batch-id slot to clear —
+        # buffer is reused each step. Just remove from tracking dict.
         self.routing_batch_to_request.pop(batch_id, None)
 
     def _clear_table_slot(self, batch_id: int):
-        assert 0 <= batch_id < self.max_num_seqs
-        self.routing_replay_table[batch_id].fill_(-1)
+        # No-op with gpu_routing_buffer (v2): buffer is linear, reused each step
+        pass
 
     def get_routing_table(self) -> paddle.Tensor:
-        return self.routing_replay_table
+        return self.gpu_routing_buffer
+
+    def get_gpu_routing_buffer(self) -> paddle.Tensor:
+        return self.gpu_routing_buffer
 
     def split_request_id(self, request_id: str):
         """
@@ -415,8 +570,107 @@ class RoutingReplayManager:
 
     def clear_all_request(self):
         """Clear all requests"""
-        self.routing_replay_table.fill_(-1)
+        self.gpu_routing_buffer.fill_(-1)
         self.routing_batch_to_request = {}
+
+
+class RoutingHostBuffer:
+    """
+    Manages routing_host_buffer (corresponds to KVCache GPU cache).
+    Indexed by gpu_block_id * block_size + offset.
+    Shared across processes via POSIX SharedMemory.
+    Each DP rank creates its own instance; name includes dp_suffix.
+    """
+
+    def __init__(
+        self, num_gpu_blocks: int, block_size: int, num_moe_layers: int, top_k: int, dtype: str, dp_suffix: str = ""
+    ):
+        max_num_gpu_tokens = num_gpu_blocks * block_size
+        self.shape = (max_num_gpu_tokens, num_moe_layers, top_k)
+        self.dtype = np.dtype(dtype)
+        self.block_size = block_size
+        total_bytes = int(np.prod(self.shape)) * self.dtype.itemsize
+
+        self.shm_name = f"routing_host_buffer.{dp_suffix}"
+        self.shm = multiprocessing.shared_memory.SharedMemory(
+            create=True, size=max(total_bytes, 1), name=self.shm_name
+        )
+        self.buffer = np.ndarray(self.shape, dtype=self.dtype, buffer=self.shm.buf)
+        self.buffer[:] = 0xFF if dtype == "uint8" else 0  # -1 for uint8
+
+        logger.info(
+            f"[R3] Created RoutingHostBuffer: shape={self.shape}, "
+            f"size={total_bytes / 1024:.1f} KB, name={self.shm_name}"
+        )
+
+    def close(self):
+        self.shm.close()
+        self.shm.unlink()
+
+
+class RoutingHostBufferView:
+    """Read/write view of routing_host_buffer (cross-process, does not own)."""
+
+    def __init__(self, shape, dtype: str, shm_name: str):
+        self.shm = multiprocessing.shared_memory.SharedMemory(name=shm_name, create=False)
+        self.dtype = np.dtype(dtype)
+        self.buffer = np.ndarray(shape, dtype=self.dtype, buffer=self.shm.buf)
+
+    def scatter(self, slot_mapping: np.ndarray, data: np.ndarray):
+        """Scatter GPU buffer data to corresponding slots (Worker calls this)."""
+        self.buffer[slot_mapping] = data
+
+    def gather(self, slot_mapping: np.ndarray) -> np.ndarray:
+        """Gather data from specified slots (TokenProcessor calls this)."""
+        return self.buffer[slot_mapping].copy()
+
+    def close(self):
+        self.shm.close()
+
+
+class RoutingSwapBuffer:
+    """
+    Manages routing_swap_buffer (corresponds to KVCache CPU cache).
+    Indexed by cpu_block_id * block_size + offset.
+    CacheTransferManager creates this; shared via SharedMemory.
+    """
+
+    def __init__(
+        self, num_cpu_blocks: int, block_size: int, num_moe_layers: int, top_k: int, dtype: str, dp_suffix: str = ""
+    ):
+        max_num_cpu_tokens = num_cpu_blocks * block_size
+        self.shape = (max_num_cpu_tokens, num_moe_layers, top_k)
+        self.dtype = np.dtype(dtype)
+        self.block_size = block_size
+        total_bytes = int(np.prod(self.shape)) * self.dtype.itemsize
+
+        self.shm_name = f"routing_swap_buffer.{dp_suffix}"
+        self.shm = multiprocessing.shared_memory.SharedMemory(
+            create=True, size=max(total_bytes, 1), name=self.shm_name
+        )
+        self.buffer = np.ndarray(self.shape, dtype=self.dtype, buffer=self.shm.buf)
+        self.buffer[:] = 0xFF if dtype == "uint8" else 0
+
+        logger.info(
+            f"[R3] Created RoutingSwapBuffer: shape={self.shape}, "
+            f"size={total_bytes / 1024:.1f} KB, name={self.shm_name}"
+        )
+
+    def close(self):
+        self.shm.close()
+        self.shm.unlink()
+
+
+class RoutingSwapBufferView:
+    """Read/write view of routing_swap_buffer (cross-process, does not own)."""
+
+    def __init__(self, shape, dtype: str, shm_name: str):
+        self.shm = multiprocessing.shared_memory.SharedMemory(name=shm_name, create=False)
+        self.dtype = np.dtype(dtype)
+        self.buffer = np.ndarray(shape, dtype=self.dtype, buffer=self.shm.buf)
+
+    def close(self):
+        self.shm.close()
 
 
 class StoreWrapper(object):
