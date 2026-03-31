@@ -293,6 +293,25 @@ class PrefixCacheManager:
         else:
             storage_arg_str = " "
 
+        # Compute routing replay args for CTM
+        routing_arg_str = ""
+        routing_replay_config = getattr(self.config, "routing_replay_config", None)
+        if routing_replay_config is not None and routing_replay_config.enable_routing_replay:
+            model_config = self.config.model_config
+            num_moe_layers = model_config.num_hidden_layers - model_config.moe_layer_start_index
+            if model_config.architectures[0] == "Glm4MoeForCausalLM":
+                moe_top_k = model_config.num_experts_per_tok
+            else:
+                moe_top_k = model_config.moe_k
+            num_experts = model_config.moe_num_experts + model_config.moe_num_shared_experts
+            routing_dtype = "uint8" if num_experts + 1 <= 255 else ("uint16" if num_experts + 1 <= 65535 else "uint32")
+            routing_arg_str = (
+                f" --enable_routing_replay 1"
+                f" --routing_num_moe_layers {num_moe_layers}"
+                f" --routing_moe_top_k {moe_top_k}"
+                f" --routing_dtype {routing_dtype}"
+            )
+
         if self.cache_config.num_cpu_blocks > 0 or self.cache_config.kvcache_storage_backend:
             for i in range(tensor_parallel_size):
                 launch_cmd = (
@@ -324,6 +343,7 @@ class PrefixCacheManager:
                     + f" --write_policy {cache_config.write_policy}"
                     + f" --max_model_len {self.config.model_config.max_model_len}"
                     + f" --model_path {self.config.model_config.model}"
+                    + routing_arg_str
                     + f" >{log_dir}/launch_cache_transfer_manager_{int(device_ids[i])}.log 2>&1"
                 )
                 logger.info(f"Launch cache transfer manager, command:{launch_cmd}")

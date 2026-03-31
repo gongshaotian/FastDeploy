@@ -325,15 +325,29 @@ def post_process_normal(
 
     # Routing replay
     if routing_replay_manager is not None:
-        # Update host cache
-        slot_mapping = routing_replay_manager.compute_slot_mapping(
-            positions=routing_replay_manager.pending_update_positions
-        )
-        routing_replay_manager.update_host_cache(
-            positions=routing_replay_manager.pending_update_positions, slot_mapping=slot_mapping
-        )
+        # Trigger lazy SharedMemory attach if not yet attempted
+        routing_replay_manager._try_attach_routing_host_view()
+        if routing_replay_manager.routing_host_view is not None:
+            # Phase 2 path: GPU transient buffer → SharedMemory routing_host_buffer
+            slot_mapping_flat = routing_replay_manager.compute_slot_mapping_flat(
+                positions=routing_replay_manager.pending_update_positions
+            )
+            num_tokens = len(slot_mapping_flat)
+            if routing_replay_manager.tp_rank == 0:
+                routing_replay_manager.save_captured_routing(
+                    num_tokens=num_tokens,
+                    slot_mapping=slot_mapping_flat,
+                )
+        else:
+            # Legacy v1 path: batch_id-indexed GPU table → CPU _host_cache
+            slot_mapping = routing_replay_manager.compute_slot_mapping(
+                positions=routing_replay_manager.pending_update_positions
+            )
+            routing_replay_manager.update_host_cache(
+                positions=routing_replay_manager.pending_update_positions, slot_mapping=slot_mapping
+            )
 
-        # Put routing of finished requests to store
+        # Put routing of finished requests to store (legacy path, still needed until Step 4 fully migrates to Engine)
         finished_batch_ids = paddle.flatten(paddle.isin(sampler_output.sampled_token_ids, model_output.eos_token_id))
         context_lens = model_output.seq_lens_decoder + model_output.seq_lens_encoder
         routing_replay_manager.put_finished_batch(finished_batch_ids=finished_batch_ids, seq_lens_decoder=context_lens)
@@ -475,13 +489,27 @@ def post_process_specualate(
 
     # Routing replay
     if routing_replay_manager is not None:
-        # Update host cache
-        slot_mapping = routing_replay_manager.compute_slot_mapping(
-            positions=routing_replay_manager.pending_update_positions
-        )
-        routing_replay_manager.update_host_cache(
-            positions=routing_replay_manager.pending_update_positions, slot_mapping=slot_mapping
-        )
+        # Trigger lazy SharedMemory attach if not yet attempted
+        routing_replay_manager._try_attach_routing_host_view()
+        if routing_replay_manager.routing_host_view is not None:
+            # Phase 2 path: GPU transient buffer → SharedMemory routing_host_buffer
+            slot_mapping_flat = routing_replay_manager.compute_slot_mapping_flat(
+                positions=routing_replay_manager.pending_update_positions
+            )
+            num_tokens = len(slot_mapping_flat)
+            if routing_replay_manager.tp_rank == 0:
+                routing_replay_manager.save_captured_routing(
+                    num_tokens=num_tokens,
+                    slot_mapping=slot_mapping_flat,
+                )
+        else:
+            # Legacy v1 path
+            slot_mapping = routing_replay_manager.compute_slot_mapping(
+                positions=routing_replay_manager.pending_update_positions
+            )
+            routing_replay_manager.update_host_cache(
+                positions=routing_replay_manager.pending_update_positions, slot_mapping=slot_mapping
+            )
 
         # Put routing of finished requests to store
         last_accept_token = paddle.full_like(model_output.accept_tokens, -1)
