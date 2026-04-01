@@ -869,11 +869,6 @@ class GPUModelRunner(ModelRunnerBase):
                         prompt_token_ids = request.prompt_token_ids
                     self.proposer.start_request(idx, request.request_id, prompt_token_ids)
 
-                # Routing Replay
-                if self.fd_config.routing_replay_config.enable_routing_replay:
-                    # 1.prefix task(need regist) 2. chunkend task(not need regist)
-                    self.routing_replay_manager.register_request(batch_id=idx, request_id=request.request_id)
-
                 if (
                     self.fd_config.scheduler_config.splitwise_role == "decode"
                 ):  # In PD, we continue to decode after P generate first token
@@ -917,10 +912,6 @@ class GPUModelRunner(ModelRunnerBase):
                 self.prompt_logprobs_reqs.pop(request.request_id, None)
                 self.in_progress_prompt_logprobs.pop(request.request_id, None)
                 self.forward_batch_reqs_list[idx] = None
-
-                # Routing Replay
-                if self.fd_config.routing_replay_config.enable_routing_replay:
-                    self.routing_replay_manager.clear_request(batch_id=idx)
 
                 continue
 
@@ -1279,13 +1270,10 @@ class GPUModelRunner(ModelRunnerBase):
         Initialize forward meta, attention meta data and update some config.
         """
         # Initialize forward meta
-        routing_replay_table = None
+        num_running_requests = self.share_inputs["seq_lens_this_time"].shape[0]
         gpu_routing_buffer = None
         if self.routing_replay_manager is not None:
-            routing_replay_table = self.routing_replay_manager.get_routing_table()
-
-        num_running_requests = self.share_inputs["seq_lens_this_time"].shape[0]
-        gpu_routing_buffer = self.routing_replay_manager.get_gpu_routing_buffer()
+            gpu_routing_buffer = self.routing_replay_manager.get_gpu_routing_buffer()
         self.forward_meta = ForwardMeta(
             ids_remove_padding=self.share_inputs["ids_remove_padding"],
             rotary_embs=self.share_inputs["rope_emb"],
@@ -1312,7 +1300,7 @@ class GPUModelRunner(ModelRunnerBase):
             kv_batch_ids=self.share_inputs["kv_batch_ids"],
             kv_tile_ids_per_batch=self.share_inputs["kv_tile_ids_per_batch"],
             kv_num_blocks_x_cpu=self.share_inputs["kv_num_blocks_x_cpu"],
-            routing_replay_table=routing_replay_table,
+            routing_replay_table=None,
             gpu_routing_buffer=gpu_routing_buffer,
         )
 
@@ -2718,7 +2706,7 @@ class GPUModelRunner(ModelRunnerBase):
 
         # Routing Replay
         if self.routing_replay_manager:
-            self.routing_replay_manager.clear_all_request()
+            self.routing_replay_manager.clear()
 
     def update_parameters(self, pid):
         """Dynamic model loader use to update parameters use for RL"""
