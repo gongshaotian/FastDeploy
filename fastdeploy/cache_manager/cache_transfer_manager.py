@@ -330,7 +330,7 @@ class CacheTransferManager:
 
         try:
             from fastdeploy.cache_manager.cache_data import AuxBlockDataSpec
-            from fastdeploy.model_executor.layers.moe.routing_indices_cache import (
+            from fastdeploy.cache_manager.routing_cache_manager import (
                 RoutingHostBufferView,
                 RoutingSwapBuffer,
             )
