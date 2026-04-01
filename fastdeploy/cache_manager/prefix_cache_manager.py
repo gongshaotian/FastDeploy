@@ -297,19 +297,11 @@ class PrefixCacheManager:
         routing_arg_str = ""
         routing_replay_config = getattr(self.config, "routing_replay_config", None)
         if routing_replay_config is not None and routing_replay_config.enable_routing_replay:
-            model_config = self.config.model_config
-            num_moe_layers = model_config.num_hidden_layers - model_config.moe_layer_start_index
-            if model_config.architectures[0] == "Glm4MoeForCausalLM":
-                moe_top_k = model_config.num_experts_per_tok
-            else:
-                moe_top_k = model_config.moe_k
-            num_experts = model_config.moe_num_experts + model_config.moe_num_shared_experts
-            routing_dtype = "uint8" if num_experts + 1 <= 255 else ("uint16" if num_experts + 1 <= 65535 else "uint32")
             routing_arg_str = (
                 f" --enable_routing_replay 1"
-                f" --routing_num_moe_layers {num_moe_layers}"
-                f" --routing_moe_top_k {moe_top_k}"
-                f" --routing_dtype {routing_dtype}"
+                f" --routing_num_moe_layers {routing_replay_config.num_moe_layers}"
+                f" --routing_moe_top_k {routing_replay_config.moe_top_k}"
+                f" --routing_dtype {routing_replay_config.routing_dtype}"
             )
 
         if self.cache_config.num_cpu_blocks > 0 or self.cache_config.kvcache_storage_backend:

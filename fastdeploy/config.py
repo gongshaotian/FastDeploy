@@ -1648,6 +1648,11 @@ class RoutingReplayConfig:
         # Fused routing of all layers
         self.use_fused_put: bool = False
 
+        # Auto-filled by FDConfig from ModelConfig (do not set manually)
+        self.routing_dtype: str = ""  # "uint8" / "uint16" / "uint32"
+        self.num_moe_layers: int = 0
+        self.moe_top_k: int = 0
+
         if args is not None:
             for key, value in args.items():
                 if hasattr(self, key) and value != "None":
@@ -1713,6 +1718,29 @@ class FDConfig:
         self.structured_outputs_config: StructuredOutputsConfig = structured_outputs_config
         self.router_config: RouterConfig = router_config
         self.routing_replay_config = routing_replay_config
+
+        # Fill computed routing replay fields from model config
+        if (
+            self.routing_replay_config is not None
+            and self.routing_replay_config.enable_routing_replay
+            and model_config
+        ):
+            rrc = self.routing_replay_config
+            rrc.num_moe_layers = model_config.num_hidden_layers - model_config.moe_layer_start_index
+            if model_config.architectures[0] == "Glm4MoeForCausalLM":
+                rrc.moe_top_k = model_config.num_experts_per_tok
+            else:
+                rrc.moe_top_k = model_config.moe_k
+            num_experts = model_config.moe_num_experts + model_config.moe_num_shared_experts
+            total_number = num_experts + 1  # +1 for reserved fill value
+            if total_number <= 255:
+                rrc.routing_dtype = "uint8"
+            elif total_number <= 65535:
+                rrc.routing_dtype = "uint16"
+            elif total_number <= 4294967295:
+                rrc.routing_dtype = "uint32"
+            else:
+                raise ValueError(f"num_experts {num_experts} exceeds uint32 range")
 
         # Initialize cuda graph capture list
         max_capture_shape = self.scheduler_config.max_num_seqs

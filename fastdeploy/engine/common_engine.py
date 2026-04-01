@@ -2275,48 +2275,36 @@ class EngineService:
         self.cfg.cache_config.reset(num_gpu_blocks)
         self.resource_manager.reset_cache_config(self.cfg.cache_config)
 
-        # Create RoutingHostBuffer (SharedMemory) after num_gpu_blocks is known
+        # Create RoutingCacheManager (SharedMemory) after num_gpu_blocks is known
+        self.routing_cache_manager = None
         if self.cfg.routing_replay_config.enable_routing_replay:
-            self._init_routing_host_buffer(num_gpu_blocks)
+            self._init_routing_cache_manager(num_gpu_blocks)
 
         if self.cfg.cache_config.enable_prefix_caching or self.cfg.scheduler_config.splitwise_role != "mixed":
             device_ids = self.cfg.parallel_config.device_ids.split(",")
             self.cache_manager_processes = self.start_cache_service(device_ids, self.ipc_signal_suffix)
 
-    def _init_routing_host_buffer(self, num_gpu_blocks: int):
-        """Create RoutingHostBuffer SharedMemory after profiling determines num_gpu_blocks."""
+    def _init_routing_cache_manager(self, num_gpu_blocks: int):
+        """Create RoutingCacheManager (includes SharedMemory host buffer) after profiling."""
         from fastdeploy.cache_manager.routing_cache_manager import (
-            RoutingHostBuffer,
+            RoutingCacheManager,
             RoutingHostBufferView,
         )
 
-        model_config = self.cfg.model_config
-        num_moe_layers = model_config.num_hidden_layers - model_config.moe_layer_start_index
-        if model_config.architectures[0] == "Glm4MoeForCausalLM":
-            moe_top_k = model_config.num_experts_per_tok
-        else:
-            moe_top_k = model_config.moe_k
-
-        num_experts = model_config.moe_num_experts + model_config.moe_num_shared_experts
-        dtype = "uint8" if num_experts + 1 <= 255 else ("uint16" if num_experts + 1 <= 65535 else "uint32")
-
-        dp_suffix = str(self.cfg.parallel_config.local_engine_worker_queue_port)
-        self.routing_host_buffer = RoutingHostBuffer(
+        self.routing_cache_manager = RoutingCacheManager(
+            fd_config=self.cfg,
             num_gpu_blocks=num_gpu_blocks,
-            block_size=self.cfg.cache_config.block_size,
-            num_moe_layers=num_moe_layers,
-            top_k=moe_top_k,
-            dtype=dtype,
-            dp_suffix=dp_suffix,
         )
 
         # Set routing_host_view on resource_manager for PD disaggregation (D side)
         if hasattr(self, "resource_manager") and hasattr(self.resource_manager, "routing_host_view"):
+            rrc = self.cfg.routing_replay_config
+            dp_suffix = str(self.cfg.parallel_config.local_engine_worker_queue_port)
             shm_name = f"routing_host_buffer.{dp_suffix}"
             max_num_kv_tokens = num_gpu_blocks * self.cfg.cache_config.block_size
-            shape = (max_num_kv_tokens, num_moe_layers, moe_top_k)
+            shape = (max_num_kv_tokens, rrc.num_moe_layers, rrc.moe_top_k)
             self.resource_manager.routing_host_view = RoutingHostBufferView(
-                shape=shape, dtype=dtype, shm_name=shm_name
+                shape=shape, dtype=rrc.routing_dtype, shm_name=shm_name
             )
 
     def check_health(self, time_interval_threashold=30):

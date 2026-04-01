@@ -145,26 +145,17 @@ class TokenProcessor:
                 RoutingHostBufferView,
             )
 
-            model_config = self.cfg.model_config
+            rrc = self.cfg.routing_replay_config
             cache_config = self.cfg.cache_config
-            num_moe_layers = model_config.num_hidden_layers - model_config.moe_layer_start_index
-            if model_config.architectures[0] == "Glm4MoeForCausalLM":
-                moe_top_k = model_config.num_experts_per_tok
-            else:
-                moe_top_k = model_config.moe_k
-            num_experts = model_config.moe_num_experts + model_config.moe_num_shared_experts
-            dtype = "uint8" if num_experts + 1 <= 255 else ("uint16" if num_experts + 1 <= 65535 else "uint32")
 
             dp_suffix = str(self.cfg.parallel_config.local_engine_worker_queue_port)
             shm_name = f"routing_host_buffer.{dp_suffix}"
             num_gpu_blocks = cache_config.total_block_num
             max_num_kv_tokens = num_gpu_blocks * cache_config.block_size
-            shape = (max_num_kv_tokens, num_moe_layers, moe_top_k)
+            shape = (max_num_kv_tokens, rrc.num_moe_layers, rrc.moe_top_k)
 
-            self.routing_host_view = RoutingHostBufferView(shape=shape, dtype=dtype, shm_name=shm_name)
+            self.routing_host_view = RoutingHostBufferView(shape=shape, dtype=rrc.routing_dtype, shm_name=shm_name)
             self._routing_block_size = cache_config.block_size
-            self._routing_num_moe_layers = num_moe_layers
-            self._routing_moe_top_k = moe_top_k
             llm_logger.info(f"[R3] TokenProcessor attached to RoutingHostBuffer: {shm_name}")
         except FileNotFoundError:
             llm_logger.warning("[R3] RoutingHostBuffer SharedMemory not found, routing gather disabled.")
