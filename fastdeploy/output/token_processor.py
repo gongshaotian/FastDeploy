@@ -141,7 +141,7 @@ class TokenProcessor:
         if not self.cfg.routing_replay_config.enable_routing_replay:
             return
         try:
-            from fastdeploy.model_executor.layers.moe.routing_indices_cache import (
+            from fastdeploy.cache_manager.routing_cache_manager import (
                 RoutingHostBufferView,
             )
 

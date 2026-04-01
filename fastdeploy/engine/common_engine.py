@@ -2285,7 +2285,7 @@ class EngineService:
 
     def _init_routing_host_buffer(self, num_gpu_blocks: int):
         """Create RoutingHostBuffer SharedMemory after profiling determines num_gpu_blocks."""
-        from fastdeploy.model_executor.layers.moe.routing_indices_cache import (
+        from fastdeploy.cache_manager.routing_cache_manager import (
             RoutingHostBuffer,
             RoutingHostBufferView,
         )
