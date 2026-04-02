@@ -99,9 +99,6 @@ def _save_routing_kernel(
 
     final_mask = load_mask & pos_mask
 
-    batch_valid = (batch_ids[:, None] >= 0) & (batch_ids[:, None] < MAX_NUM_SEQS)
-    final_mask = final_mask & batch_valid
-
     tl.store(output_ptrs, topk_vals, mask=final_mask)
 
 
