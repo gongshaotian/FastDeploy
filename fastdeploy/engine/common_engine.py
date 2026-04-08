@@ -2570,6 +2570,9 @@ class EngineService:
             num_gpu_blocks=num_gpu_blocks,
         )
 
+        # Pass routing_cache_manager to TokenProcessor for local/rdma store dispatch
+        self.token_processor.routing_cache_manager = self.routing_cache_manager
+
         # Set routing_host_view on resource_manager for PD disaggregation (D side)
         if hasattr(self, "resource_manager") and hasattr(self.resource_manager, "routing_host_view"):
             rrc = self.cfg.routing_replay_config

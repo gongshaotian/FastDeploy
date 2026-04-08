@@ -1832,7 +1832,7 @@ class RoutingReplayConfig:
 
         self.enable_routing_replay: bool = False
 
-        # Routing store type: local/rdma
+        # Routing return mode: "local" (file store) / "rdma" (P2PStore) / "response" (attach to RequestOutput)
         self.routing_store_type: str = "local"
 
         # Local routing store

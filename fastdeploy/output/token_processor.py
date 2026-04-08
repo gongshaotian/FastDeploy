@@ -135,6 +135,7 @@ class TokenProcessor:
         # Routing replay: attach to SharedMemory routing_host_buffer (lazy init after profiling)
         self.routing_host_view = None
         self._routing_host_view_init_attempted = False
+        self.routing_cache_manager = None  # Set by Engine after profiling for local/rdma store dispatch
 
     def _init_routing_host_view(self):
         """Attach to SharedMemory routing_host_buffer created by Engine. Called lazily."""
@@ -577,17 +578,27 @@ class TokenProcessor:
         """
         # Gather routing data before blocks are recycled (blocks will be freed below)
         if result is not None and result.finished and self.cfg.routing_replay_config.enable_routing_replay:
+            store_type = self.cfg.routing_replay_config.routing_store_type
             try:
                 seq_len = (
                     task.prompt_token_ids_len + len(task.output_token_ids)
                     if hasattr(task, "output_token_ids")
                     else task.prompt_token_ids_len
                 )
-                routing_data = self._gather_routing_for_finished_request(task, seq_len)
-                if routing_data is not None:
-                    result.routing_data = routing_data
+                if store_type == "response":
+                    # Attach routing to response for API return
+                    routing_data = self._gather_routing_for_finished_request(task, seq_len)
+                    if routing_data is not None:
+                        result.routing_data = routing_data
+                elif self.routing_cache_manager is not None:
+                    # "local"/"rdma" mode: dispatch to StoreWrapper via RoutingCacheManager
+                    self.routing_cache_manager.on_request_finished(
+                        request_id=task_id,
+                        block_table=task.block_tables,
+                        seq_len=seq_len,
+                    )
             except Exception as e:
-                llm_logger.warning(f"[R3] Failed to gather routing for {task_id}: {e}")
+                llm_logger.warning(f"[R3] Failed to handle routing for {task_id}: {e}")
 
         if is_prefill:
             start_time = time.time()

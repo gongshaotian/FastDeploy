@@ -283,6 +283,7 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: List[ChatCompletionResponseChoice]
     usage: UsageInfo
+    routed_experts: Optional[str] = None
 
 
 class LogProbEntry(BaseModel):
@@ -385,6 +386,7 @@ class CompletionResponse(BaseModel):
     model: str
     choices: List[CompletionResponseChoice]
     usage: UsageInfo
+    routed_experts: Optional[str] = None
 
 
 class CompletionLogprobs(BaseModel):

@@ -41,6 +41,14 @@ class RoutingHostBuffer:
         total_bytes = int(np.prod(self.shape)) * self.dtype.itemsize
 
         self.shm_name = f"routing_host_buffer.{dp_suffix}"
+        # Clean up stale SharedMemory from previous crashed process
+        try:
+            stale = multiprocessing.shared_memory.SharedMemory(name=self.shm_name, create=False)
+            stale.close()
+            stale.unlink()
+            logger.warning(f"[R3] Cleaned up stale SharedMemory: {self.shm_name}")
+        except FileNotFoundError:
+            pass
         self.shm = multiprocessing.shared_memory.SharedMemory(
             create=True, size=max(total_bytes, 1), name=self.shm_name
         )
@@ -94,6 +102,14 @@ class RoutingSwapBuffer:
         total_bytes = int(np.prod(self.shape)) * self.dtype.itemsize
 
         self.shm_name = f"routing_swap_buffer.{dp_suffix}"
+        # Clean up stale SharedMemory from previous crashed process
+        try:
+            stale = multiprocessing.shared_memory.SharedMemory(name=self.shm_name, create=False)
+            stale.close()
+            stale.unlink()
+            logger.warning(f"[R3] Cleaned up stale SharedMemory: {self.shm_name}")
+        except FileNotFoundError:
+            pass
         self.shm = multiprocessing.shared_memory.SharedMemory(
             create=True, size=max(total_bytes, 1), name=self.shm_name
         )
