@@ -699,7 +699,7 @@ class OpenAIServingChat:
                             rd = data["routing_data"]
                             if not isinstance(rd, np.ndarray):
                                 rd = np.array(rd)
-                            routing_data_result = base64.b64encode(rd.astype(np.int32).tobytes()).decode("utf-8")
+                            routing_data_result = base64.b64encode(rd.tobytes()).decode("utf-8")
         finally:
             tracing.trace_req_finish(request_id)
             await self.engine_client.connection_manager.cleanup_request(request_id)

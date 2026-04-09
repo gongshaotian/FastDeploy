@@ -140,6 +140,12 @@ class LLMEngine:
         self.engine.create_data_processor()
         self.data_processor = self.engine.data_processor
 
+        # Create RoutingCacheManager when skipping profiling (num_gpu_blocks_override is set)
+        if not self.do_profile and self.cfg.routing_replay_config.enable_routing_replay:
+            num_gpu_blocks = self.cfg.cache_config.num_gpu_blocks_override
+            if num_gpu_blocks is not None:
+                self.engine._init_routing_cache_manager(num_gpu_blocks)
+
         # If block numer is specified and model is deployed in mixed mode, start cache manager first
         if not self.do_profile and self.cfg.scheduler_config.splitwise_role != "mixed":
             if not current_platform.is_intel_hpu():
