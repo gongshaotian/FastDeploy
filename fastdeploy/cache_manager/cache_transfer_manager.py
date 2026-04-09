@@ -350,8 +350,9 @@ class CacheTransferManager:
                 dtype=routing_dtype,
             )
 
-            # Create routing swap buffer (for CPU blocks)
-            if self.num_cpu_blocks > 0:
+            # Create routing swap buffer (for CPU blocks).
+            # Only rank 0 needs it — _swap_routing() only runs on rank 0.
+            if self.num_cpu_blocks > 0 and self.rank == 0:
                 dp_suffix = str(getattr(args, "engine_worker_queue_port", ""))
                 self.routing_swap_buffer = RoutingSwapBuffer(
                     num_cpu_blocks=self.num_cpu_blocks,
@@ -384,8 +385,15 @@ class CacheTransferManager:
         """
         Swap routing data between routing_host_buffer and routing_swap_buffer.
         Pure CPU-to-CPU numpy memcpy, no GPU DMA.
+        Only rank 0 performs this (routing buffers are cross-rank SharedMemory).
         """
         if self.routing_host_view is None or self.routing_swap_buffer is None:
+            logger.warning(
+                f"[R3] _swap_routing skipped: host_view={self.routing_host_view is not None}, "
+                f"swap_buffer={self.routing_swap_buffer is not None}"
+            )
+            return
+        if self.rank > 0:
             return
         bs = self.block_size
         for gpu_bid, cpu_bid in zip(gpu_block_ids, cpu_block_ids):
@@ -397,6 +405,11 @@ class CacheTransferManager:
                 self.routing_swap_buffer.buffer[cpu_start:cpu_end] = self.routing_host_view.buffer[gpu_start:gpu_end]
             else:  # to_gpu
                 self.routing_host_view.buffer[gpu_start:gpu_end] = self.routing_swap_buffer.buffer[cpu_start:cpu_end]
+        logger.info(
+            f"[R3] _swap_routing {direction}: {len(gpu_block_ids)} blocks, "
+            f"gpu_ids={gpu_block_ids[:3]}{'...' if len(gpu_block_ids) > 3 else ''}, "
+            f"cpu_ids={cpu_block_ids[:3]}{'...' if len(cpu_block_ids) > 3 else ''}"
+        )
 
     def _write_routing_to_storage(self, task_keys, gpu_block_ids):
         """

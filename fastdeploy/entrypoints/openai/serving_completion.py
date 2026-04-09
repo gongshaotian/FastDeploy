@@ -781,7 +781,7 @@ class OpenAIServingCompletion:
             rd = final_res_batch[-1]["routing_data"]
             if not isinstance(rd, np.ndarray):
                 rd = np.array(rd)
-            routed_experts = base64.b64encode(rd.astype(np.int32).tobytes()).decode("utf-8")
+            routed_experts = base64.b64encode(rd.tobytes()).decode("utf-8")
 
         return CompletionResponse(
             id=request_id,
