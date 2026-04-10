@@ -293,16 +293,12 @@ class PrefixCacheManager:
         else:
             storage_arg_str = " "
 
-        # Compute routing replay args for CTM
-        routing_arg_str = ""
+        # Compute routing replay args for CTM — single JSON arg
         routing_replay_config = getattr(self.config, "routing_replay_config", None)
         if routing_replay_config is not None and routing_replay_config.enable_routing_replay:
-            routing_arg_str = (
-                f" --enable_routing_replay 1"
-                f" --routing_num_moe_layers {routing_replay_config.num_moe_layers}"
-                f" --routing_moe_top_k {routing_replay_config.moe_top_k}"
-                f" --routing_dtype {routing_replay_config.routing_dtype}"
-            )
+            routing_arg_str = f" --routing_replay_config '{routing_replay_config.to_json_string()}'"
+        else:
+            routing_arg_str = ""
 
         if self.cache_config.num_cpu_blocks > 0 or self.cache_config.kvcache_storage_backend:
             for i in range(tensor_parallel_size):

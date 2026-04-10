@@ -42,7 +42,7 @@ class StoreTask(TypedDict):
 
 
 class StoreWrapper(object):
-    def __init__(self, fd_config: False) -> None:
+    def __init__(self, fd_config) -> None:
         super().__init__()
         self.fd_config = fd_config
 
@@ -63,16 +63,16 @@ class StoreWrapper(object):
             routing_replay_config=self.fd_config.routing_replay_config,
             max_model_len=self.fd_config.model_config.max_model_len,
         )
-        self._sotre_process_running = False
+        self._store_process_running = False
 
         # Register atexit handler
         atexit.register(self.shutdown)
 
     def shutdown(self):
         """ """
-        if not self._sotre_process_running:
+        if not self._store_process_running:
             return
-        self._sotre_process_running = False
+        self._store_process_running = False
 
         # Stop the monitor thread
         self._stop_monitor.set()
@@ -95,13 +95,13 @@ class StoreWrapper(object):
 
         self._task_queue.join()
         self.manager.shutdown()
-        self._sotre_process_running = False
+        self._store_process_running = False
 
     def start_store_warpper(self):
         """ """
-        if self._sotre_process_running:
+        if self._store_process_running:
             return
-        self._sotre_process_running = True
+        self._store_process_running = True
 
         # Start monitor thread
         self._stop_monitor.clear()
@@ -115,7 +115,7 @@ class StoreWrapper(object):
         """ """
         while not self._stop_monitor.is_set():
             time.sleep(2.0)
-            if not self._sotre_process_running:
+            if not self._store_process_running:
                 break
             qsize = self._task_queue.qsize()
 
@@ -127,9 +127,9 @@ class StoreWrapper(object):
                 )
             logger.debug(f"[Monitor] Queue load: {qsize}/{self.queue_max_size}")
 
-    def submit_put_task(self, routing_indices: paddle.Tensor, rollout_id: str, layer_idx: int = None) -> None:
+    def submit_put_task(self, routing_indices: np.ndarray, rollout_id: str, layer_idx: int = None) -> None:
         """Submit a put task to the task queue"""
-        if not self._sotre_process_running:
+        if not self._store_process_running:
             raise RuntimeError("Store not started.")
 
         start_time = time.perf_counter()
@@ -138,9 +138,7 @@ class StoreWrapper(object):
         else:
             rdma_rollout_key = rollout_id
 
-        routing_indices_np = routing_indices.numpy()
-
-        task: StoreTask = {"task_type": "put", "key": rdma_rollout_key, "data": routing_indices_np}
+        task: StoreTask = {"task_type": "put", "key": rdma_rollout_key, "data": routing_indices}
 
         try:
             self._task_queue.put_nowait(task)
@@ -150,7 +148,7 @@ class StoreWrapper(object):
 
     def submit_clear_store_task(self) -> None:
         """Submit clear store task"""
-        if not self._sotre_process_running:
+        if not self._store_process_running:
             raise RuntimeError("Store not started.")
 
         start_time = time.perf_counter()
@@ -166,7 +164,7 @@ class StoreWrapper(object):
 
     def submit_clear_prefix_batch_task(self, rollout_id, layer_idx: int = None) -> None:
         """Submit clear prefix batch task"""
-        if not self._sotre_process_running:
+        if not self._store_process_running:
             raise RuntimeError("Store not started.")
         prefix_batch_id = self.get_needed_clear_ids(rollout_id)
         if prefix_batch_id is None:
@@ -186,13 +184,13 @@ class StoreWrapper(object):
             f"[R3] Submit clear prefix batch task for key: {prefix_batch_id}, cost time: {time.perf_counter()-start_time} s"
         )
 
-    def get_needed_clear_ids(self, roullout_id: str) -> Optional[str]:
+    def get_needed_clear_ids(self, rollout_id: str) -> Optional[str]:
         """
         Generate the prefix IDs for all closed multi-round tasks.
         rollout_id: "xxx_xxx_epoch_15:2:2:1"
             example: xxx_xxx_data_id:gen_id:turn_id:segment_id
         """
-        reversed_segment_id, reversed_turn_id, reversed_prefix_gen_id = roullout_id[::-1].split(":", 2)
+        reversed_segment_id, reversed_turn_id, reversed_prefix_gen_id = rollout_id[::-1].split(":", 2)
         prefix_gen_id = reversed_prefix_gen_id[::-1]
         turn_id = eval(reversed_turn_id[::-1])
         segment_id = eval(reversed_segment_id[::-1])
