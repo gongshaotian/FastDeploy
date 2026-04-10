@@ -325,6 +325,7 @@ class TokenProcessor:
                     self._compute_speculative_status()
                 if not is_prefill:
                     self._record_completion_metrics(task, current_time)
+                self._finalize_routing(task_id, task, result, is_prefill)
                 self._recycle_resources(task_id, batch_id, task, result, is_prefill)
                 break
         return result
@@ -388,6 +389,7 @@ class TokenProcessor:
                     prompt_token_ids=task.prompt_token_ids,
                     outputs=PoolingOutput(data=pooler_output),
                 )
+                self._finalize_routing(task_id, task, result, False)
                 self._recycle_resources(task_id, i, task, result, False)
                 batch_result.append(result)
             else:
@@ -572,34 +574,51 @@ class TokenProcessor:
         except Exception as e:
             llm_logger.error(f"Error in TokenProcessor's postprocess: {e}, {str(traceback.format_exc())}")
 
-    def _recycle_resources(self, task_id, index, task, result=None, is_prefill=False):
+    def _finalize_routing(self, task_id, task, result, is_prefill=False):
         """
-        recycle resources
+        Gather routing data before blocks are freed.
+        Must be called before _recycle_resources so that block_tables are still valid.
+
+        - PD P node (is_prefill=True): gather prefill-only routing, attach to result for sending to D.
+        - Non-PD / D node (result.finished): gather full routing (prompt + output),
+          either attach to result ("response" mode) or dispatch to store ("local"/"rdma" mode).
         """
-        # Gather routing data before blocks are recycled (blocks will be freed below)
-        if result is not None and result.finished and self.cfg.routing_replay_config.enable_routing_replay:
-            store_type = self.cfg.routing_replay_config.routing_store_type
-            try:
+        if not self.cfg.routing_replay_config.enable_routing_replay:
+            return
+        if result is None:
+            return
+
+        try:
+            if is_prefill:
+                if result.error_code == 200:
+                    seq_len = task.prompt_token_ids_len
+                    routing_data = self._gather_routing_for_finished_request(task, seq_len)
+                    if routing_data is not None:
+                        result.routing_data = routing_data
+            elif result.finished:
+                store_type = self.cfg.routing_replay_config.routing_store_type
                 seq_len = (
                     task.prompt_token_ids_len + len(task.output_token_ids)
                     if hasattr(task, "output_token_ids")
                     else task.prompt_token_ids_len
                 )
                 if store_type == "response":
-                    # Attach routing to response for API return
                     routing_data = self._gather_routing_for_finished_request(task, seq_len)
                     if routing_data is not None:
                         result.routing_data = routing_data
                 elif self.routing_cache_manager is not None:
-                    # "local"/"rdma" mode: dispatch to StoreWrapper via RoutingCacheManager
                     self.routing_cache_manager.on_request_finished(
                         request_id=task_id,
                         block_table=task.block_tables,
                         seq_len=seq_len,
                     )
-            except Exception as e:
-                llm_logger.warning(f"[R3] Failed to handle routing for {task_id}: {e}")
+        except Exception as e:
+            llm_logger.warning(f"[R3] Failed to finalize routing for {task_id}: {e}")
 
+    def _recycle_resources(self, task_id, index, task, result=None, is_prefill=False):
+        """
+        recycle resources
+        """
         if is_prefill:
             start_time = time.time()
             result.metrics.wait_for_sending_cache_time = time.time()
@@ -617,15 +636,6 @@ class TokenProcessor:
                         f"wait for sending cache, request_id: {task_id}, cost seconds: {time.time()-start_time:.5f}"
                     )
                     result.metrics.send_request_output_to_decode_time = time.time()
-                    # [R3] Gather prefill routing data before sending to D
-                    if self.cfg.routing_replay_config.enable_routing_replay and result.error_code == 200:
-                        try:
-                            seq_len = task.prompt_token_ids_len
-                            routing_data = self._gather_routing_for_finished_request(task, seq_len)
-                            if routing_data is not None:
-                                result.routing_data = routing_data
-                        except Exception as e:
-                            llm_logger.warning(f"[R3] Failed to gather prefill routing for {task_id}: {e}")
                     self.split_connector.send_first_token(task.disaggregate_info, [result])
                     if envs.ENABLE_V1_KVCACHE_SCHEDULER:
                         self.resource_manager.finish_requests_async(task_id)
@@ -1048,6 +1058,7 @@ class TokenProcessor:
                         self.resource_manager.cache_output_tokens(
                             task
                         )  # when enable prefix caching, cache kv cache for output tokens
+                    self._finalize_routing(task_id, task, result, is_prefill)
                     self._recycle_resources(task_id, i, task, result, is_prefill)
                     llm_logger.info(f"eos token {task_id} Recycle end.")
                     break
@@ -1169,6 +1180,7 @@ class TokenProcessor:
                 ),
             )
             is_prefill = task.disaggregate_info is not None and task.disaggregate_info["role"] == "prefill"
+            self._finalize_routing(task.request_id, task, result, is_prefill)
             self._recycle_resources(task.request_id, i, task, result, is_prefill)
             llm_logger.warning(f"clear data for task {task.request_id}")
 
