@@ -2306,9 +2306,14 @@ class EngineService:
             shm_name = f"routing_host_buffer.{dp_suffix}"
             max_num_kv_tokens = num_gpu_blocks * self.cfg.cache_config.block_size
             shape = (max_num_kv_tokens, rrc.num_moe_layers, rrc.moe_top_k)
-            self.resource_manager.routing_host_view = RoutingHostBufferView(
-                shape=shape, dtype=rrc.routing_dtype, shm_name=shm_name
-            )
+            try:
+                self.resource_manager.routing_host_view = RoutingHostBufferView(
+                    shape=shape, dtype=rrc.routing_dtype, shm_name=shm_name
+                )
+            except FileNotFoundError:
+                self.llm_logger.warning(
+                    f"[R3] RoutingHostBuffer SharedMemory {shm_name} not found for resource_manager"
+                )
 
     def check_health(self, time_interval_threashold=30):
         """

@@ -48,7 +48,7 @@ from fastdeploy.cache_manager.transfer_factory import (
     FileStore,
     MooncakeStore,
 )
-from fastdeploy.config import CacheConfig, SpeculativeConfig
+from fastdeploy.config import CacheConfig, RoutingReplayConfig, SpeculativeConfig
 from fastdeploy.engine.request import ControlRequest, ControlResponse
 from fastdeploy.inter_communicator import EngineCacheQueue, IPCSignal, KVCacheStatus
 from fastdeploy.inter_communicator.fmq import FMQ
@@ -129,15 +129,11 @@ def parse_args():
     )
     parser.add_argument("--model_path", type=str, help="The path of model")
 
-    # Routing replay (R3) arguments
-    parser.add_argument("--enable_routing_replay", type=int, default=0, help="Enable routing replay")
-    parser.add_argument("--routing_num_moe_layers", type=int, default=0, help="Number of MoE layers for routing")
-    parser.add_argument("--routing_moe_top_k", type=int, default=0, help="MoE top_k for routing")
-    parser.add_argument("--routing_dtype", type=str, default="uint8", help="Routing data dtype")
+    # Routing replay (R3) — single JSON arg, mirrors SpeculativeConfig pattern
+    parser.add_argument("--routing_replay_config", type=json.loads, default="{}", help="Routing replay config JSON")
 
     args = parser.parse_args()
-    # Convert int flag to bool
-    args.enable_routing_replay = bool(args.enable_routing_replay)
+    args.routing_replay_config = RoutingReplayConfig(args.routing_replay_config)
     return args
 
 
@@ -254,7 +250,9 @@ class CacheTransferManager:
         self.aux_data_specs = {}
         self.routing_host_view = None
         self.routing_swap_buffer = None
-        self._init_routing_aux_data(args)
+        self.routing_replay_config = args.routing_replay_config
+        self.engine_worker_queue_port = args.engine_worker_queue_port
+        self._init_routing_aux_data()
 
         self._init_control()
 
@@ -322,10 +320,10 @@ class CacheTransferManager:
         )
         self.cache_transfer_inited_signal.value[self.rank] = 1
 
-    def _init_routing_aux_data(self, args):
+    def _init_routing_aux_data(self):
         """Initialize routing auxiliary data buffers for swap sync."""
-        enable_routing_replay = getattr(args, "enable_routing_replay", False)
-        if not enable_routing_replay:
+        routing_replay_config = self.routing_replay_config
+        if not routing_replay_config.enable_routing_replay:
             return
 
         try:
@@ -335,9 +333,9 @@ class CacheTransferManager:
                 RoutingSwapBuffer,
             )
 
-            num_moe_layers = getattr(args, "routing_num_moe_layers", 0)
-            moe_top_k = getattr(args, "routing_moe_top_k", 0)
-            routing_dtype = getattr(args, "routing_dtype", "uint8")
+            num_moe_layers = routing_replay_config.num_moe_layers
+            moe_top_k = routing_replay_config.moe_top_k
+            routing_dtype = routing_replay_config.routing_dtype
 
             if num_moe_layers == 0 or moe_top_k == 0:
                 return
@@ -353,7 +351,7 @@ class CacheTransferManager:
             # Create routing swap buffer (for CPU blocks).
             # Only rank 0 needs it — _swap_routing() only runs on rank 0.
             if self.num_cpu_blocks > 0 and self.rank == 0:
-                dp_suffix = str(getattr(args, "engine_worker_queue_port", ""))
+                dp_suffix = str(self.engine_worker_queue_port)
                 self.routing_swap_buffer = RoutingSwapBuffer(
                     num_cpu_blocks=self.num_cpu_blocks,
                     block_size=self.block_size,
@@ -365,7 +363,7 @@ class CacheTransferManager:
                 spec.swap_buffer = self.routing_swap_buffer
 
             # Attach to routing host buffer (SharedMemory created by Engine)
-            dp_suffix = str(getattr(args, "engine_worker_queue_port", ""))
+            dp_suffix = str(self.engine_worker_queue_port)
             shm_name = f"routing_host_buffer.{dp_suffix}"
             max_num_kv_tokens = self.num_gpu_blocks * self.block_size
             shape = (max_num_kv_tokens, num_moe_layers, moe_top_k)
@@ -403,8 +401,10 @@ class CacheTransferManager:
             cpu_end = cpu_start + bs
             if direction == "to_cpu":
                 self.routing_swap_buffer.buffer[cpu_start:cpu_end] = self.routing_host_view.buffer[gpu_start:gpu_end]
-            else:  # to_gpu
+            elif direction == "to_gpu":
                 self.routing_host_view.buffer[gpu_start:gpu_end] = self.routing_swap_buffer.buffer[cpu_start:cpu_end]
+            else:
+                raise ValueError(f"[R3] _swap_routing: unknown direction '{direction}', expected 'to_cpu' or 'to_gpu'")
         logger.info(
             f"[R3] _swap_routing {direction}: {len(gpu_block_ids)} blocks, "
             f"gpu_ids={gpu_block_ids[:3]}{'...' if len(gpu_block_ids) > 3 else ''}, "

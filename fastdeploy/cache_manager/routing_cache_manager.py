@@ -53,16 +53,20 @@ class RoutingHostBuffer:
             create=True, size=max(total_bytes, 1), name=self.shm_name
         )
         self.buffer = np.ndarray(self.shape, dtype=self.dtype, buffer=self.shm.buf)
-        self.buffer[:] = 0xFF if dtype == "uint8" else 0  # -1 for uint8
+        self.buffer[:] = -1  # unsigned wrap: uint8→255, uint16→65535, uint32→4294967295
 
+        self._owner = True
         logger.info(
             f"[R3] Created RoutingHostBuffer: shape={self.shape}, "
             f"size={total_bytes / 1024:.1f} KB, name={self.shm_name}"
         )
 
     def close(self):
+        """Close and unlink SharedMemory. Only the owner (creator) unlinks."""
         self.shm.close()
-        self.shm.unlink()
+        if self._owner:
+            self.shm.unlink()
+            self._owner = False
 
 
 class RoutingHostBufferView:
@@ -114,16 +118,20 @@ class RoutingSwapBuffer:
             create=True, size=max(total_bytes, 1), name=self.shm_name
         )
         self.buffer = np.ndarray(self.shape, dtype=self.dtype, buffer=self.shm.buf)
-        self.buffer[:] = 0xFF if dtype == "uint8" else 0
+        self.buffer[:] = -1  # unsigned wrap: uint8→255, uint16→65535, uint32→4294967295
 
+        self._owner = True
         logger.info(
             f"[R3] Created RoutingSwapBuffer: shape={self.shape}, "
             f"size={total_bytes / 1024:.1f} KB, name={self.shm_name}"
         )
 
     def close(self):
+        """Close and unlink SharedMemory. Only the owner (creator) unlinks."""
         self.shm.close()
-        self.shm.unlink()
+        if self._owner:
+            self.shm.unlink()
+            self._owner = False
 
 
 class RoutingSwapBufferView:
@@ -164,14 +172,16 @@ class RoutingCacheManager:
     """
 
     def __init__(self, fd_config, num_gpu_blocks: int):
-        rrc = fd_config.routing_replay_config
-        self.num_moe_layers = rrc.num_moe_layers
-        self.moe_top_k = rrc.moe_top_k
-        self.routing_dtype = rrc.routing_dtype
-        self.only_last_turn = rrc.only_last_turn
-        self.use_fused_put = rrc.use_fused_put
+        routing_replay_config = fd_config.routing_replay_config
+        self.num_moe_layers = routing_replay_config.num_moe_layers
+        self.moe_top_k = routing_replay_config.moe_top_k
+        self.routing_dtype = routing_replay_config.routing_dtype
+        self.only_last_turn = routing_replay_config.only_last_turn
+        self.use_fused_put = routing_replay_config.use_fused_put
         self.block_size = fd_config.cache_config.block_size
-        self.return_mode = rrc.routing_store_type  # "local" / "rdma" → p2pstore; "response" → attach to RequestOutput
+        self.return_mode = (
+            routing_replay_config.routing_store_type
+        )  # "local" / "rdma" → p2pstore; "response" → attach to RequestOutput
 
         dp_suffix = str(fd_config.parallel_config.local_engine_worker_queue_port)
 
@@ -239,17 +249,16 @@ class RoutingCacheManager:
             # P2PStore mode: submit to store
             rollout_id = split_request_id(request_id)
             # Transpose to [num_moe_layers, seq_len, top_k] for store compatibility
-            import paddle
-
-            routing_tensor = paddle.to_tensor(routing_data).transpose([1, 0, 2])
+            # TODO(gongshaotian): Delete redundant transpose
+            routing_data = np.ascontiguousarray(routing_data.transpose(1, 0, 2))
 
             if self.use_fused_put:
-                self._store_wrapper.submit_put_task(routing_indices=routing_tensor, rollout_id=rollout_id)
+                self._store_wrapper.submit_put_task(routing_indices=routing_data, rollout_id=rollout_id)
                 if self.only_last_turn:
                     self._store_wrapper.submit_clear_prefix_batch_task(rollout_id=rollout_id)
             else:
                 for layer_id in range(self.num_moe_layers):
-                    layer_buffer = routing_tensor[layer_id]
+                    layer_buffer = routing_data[layer_id]
                     self._store_wrapper.submit_put_task(
                         routing_indices=layer_buffer, rollout_id=rollout_id, layer_idx=layer_id
                     )
@@ -262,8 +271,7 @@ class RoutingCacheManager:
 
     def reset(self):
         """Reset SharedMemory buffer. Used during RL round cleanup."""
-        fill_val = 0xFF if self.routing_dtype == "uint8" else 0
-        self.host_buffer.buffer[:] = fill_val
+        self.host_buffer.buffer[:] = -1
 
     def close(self):
         """Clean up SharedMemory resources."""
