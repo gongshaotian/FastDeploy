@@ -560,24 +560,6 @@ class PrefixCacheManager:
         else:
             heapq.heappush(self.cpu_free_block_list, cpu_block_ids)
 
-    def _acquire_kvcache_lock(self):
-        """Acquire the GPU KV cache lock for the transfer process.
-
-        Uses a file-based lock (fcntl.flock) to ensure mutual exclusion
-        between the worker and the CPU transfer process. This prevents
-        concurrent GPU KV cache access which may cause NaN errors under
-        certain DP+EP configurations.
-        """
-        if not envs.FD_USE_KVCACHE_LOCK:
-            return
-        self.gpu_cache_lock.acquire()
-
-    def _release_kvcache_lock(self):
-        """Release the GPU KV cache lock held by the transfer process."""
-        if not envs.FD_USE_KVCACHE_LOCK:
-            return
-        self.gpu_cache_lock.release()
-
     def issue_swap_task(
         self,
         transfer_task_id,
@@ -598,14 +580,12 @@ class PrefixCacheManager:
             is_sync:          bool, whether to wait for the result of the swap task
         """
         assert is_sync, "Only support is sync for swap_task now."
-        self._acquire_kvcache_lock()
         self.task_swapping_event[transfer_task_id] = Event()
         self.cache_task_queue.put_transfer_task(
             (event_type, transfer_task_id, swap_node_ids, gpu_block_ids, cpu_block_ids)
         )
         if is_sync:
             self.sync_swap_task(transfer_task_id)
-        self._release_kvcache_lock()
 
     def sync_swap_task(self, transfer_task_id):
         """
@@ -880,7 +860,7 @@ class PrefixCacheManager:
                     read_storage_task = ReadStorageTask(
                         task_id=req_id,
                         keys=no_match_block_keys,
-                        token_ids=input_token_ids,
+                        token_ids=input_token_ids if self.kvcache_storage_backend == "attention_store" else None,
                         gpu_block_ids=gpu_recv_storage_block_ids,
                         start_read_block_idx=match_token_num // block_size,
                     )
@@ -1119,7 +1099,9 @@ class PrefixCacheManager:
         if isinstance(token_ids, np.ndarray):
             token_ids = token_ids.tolist()
         if self.config.cache_config.enable_output_caching:
-            token_ids += request.output_token_ids
+            input_token_ids = token_ids + request.output_token_ids
+        else:
+            input_token_ids = token_ids
 
         req_id = request.request_id
         keys = []
@@ -1136,7 +1118,7 @@ class PrefixCacheManager:
         write_storage_task = WriteStorageTask(
             task_id=req_id,
             keys=keys,
-            token_ids=token_ids,
+            token_ids=input_token_ids if self.kvcache_storage_backend == "attention_store" else None,
             gpu_block_ids=gpu_block_ids,
         )
         logger.debug(f"issue write storage task: {write_storage_task}")
@@ -1182,6 +1164,7 @@ class PrefixCacheManager:
         self.cache_task_queue.put_transfer_task((CacheStatus.STORAGE2GPU, task))
         if is_sync:
             storage_block_ids = self.wait_prefetch_storage_task(task.task_id)
+
         return storage_block_ids
 
     def wait_prefetch_storage_task(self, req_id):
@@ -2066,7 +2049,7 @@ class PrefixCacheManager:
                 event_type = data[0]
 
                 if event_type.value == CacheStatus.STORAGE2GPU.value:
-                    logger.info(f"recv_data_transfer_result: {data}")
+                    logger.debug(f"recv_data_transfer_result: {data}")
                     task_id, hash_keys, block_ids = data[1:]
                     if task_id not in self.storage_prefetch_block_ids:
                         self.storage_prefetch_block_ids[task_id] = []
@@ -2077,7 +2060,7 @@ class PrefixCacheManager:
                         if task_id in self.task_prefetch_event:
                             self.task_prefetch_event[task_id].set()
                 elif event_type.value == CacheStatus.GPU2STORAGE.value:
-                    logger.info(f"recv_data_transfer_result: {data}")
+                    logger.debug(f"recv_data_transfer_result: {data}")
                     task_id, hash_keys, block_ids = data[1:]
                     if task_id in self.task_write_back_event:
                         self.task_write_back_event[task_id].set()
