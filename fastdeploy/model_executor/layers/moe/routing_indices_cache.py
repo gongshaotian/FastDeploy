@@ -77,7 +77,13 @@ def save_routing_to_buffer_v2(
         topk_ids = topk_ids_all[:token_num_per_rank, :]
 
     token_num, top_k = topk_ids.shape
-    num_moe_layers = gpu_routing_buffer.shape[1]
+    buf_max_tokens, num_moe_layers, buf_top_k = gpu_routing_buffer.shape
+
+    assert (
+        token_num <= buf_max_tokens
+    ), f"[R3] token_num={token_num} exceeds gpu_routing_buffer capacity={buf_max_tokens}"
+    assert top_k == buf_top_k, f"[R3] top_k mismatch: topk_ids.top_k={top_k} vs gpu_routing_buffer.top_k={buf_top_k}"
+    assert 0 <= layer_idx < num_moe_layers, f"[R3] layer_idx={layer_idx} out of range [0, {num_moe_layers})"
 
     BLOCK_SIZE_M = 128
     BLOCK_SIZE_K = triton.next_power_of_2(top_k)
