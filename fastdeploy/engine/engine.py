@@ -464,6 +464,11 @@ class LLMEngine:
         if hasattr(self, "zmq_server") and self.zmq_server is not None:
             self.zmq_server.close()
 
+        if hasattr(self, "engine") and hasattr(self.engine, "routing_cache_manager"):
+            if self.engine.routing_cache_manager is not None:
+                self.engine.routing_cache_manager.close()
+                self.engine.routing_cache_manager = None
+
         if hasattr(self, "dp_processed"):
             for p in self.dp_processed:
                 console_logger.info(f"Waiting for worker {p.pid} to exit")

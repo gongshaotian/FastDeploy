@@ -24,6 +24,7 @@ import queue
 import threading
 import time
 import traceback
+import weakref
 from typing import List
 
 import numpy as np
@@ -254,6 +255,16 @@ class CacheTransferManager:
         self.engine_worker_queue_port = args.engine_worker_queue_port
         self._init_routing_aux_data()
 
+        # Register finalizer to release routing SharedMemory on process exit.
+        # Must use a static method — callback must NOT hold a reference to self,
+        # otherwise the object can never be GC'd and the finalizer won't fire.
+        self._finalizer = weakref.finalize(
+            self,
+            CacheTransferManager._cleanup_routing_resources,
+            self.routing_swap_buffer,
+            self.routing_host_view,
+        )
+
         self._init_control()
 
         cache_task_broadcast_data = np.zeros(shape=[1], dtype=np.int32)
@@ -378,6 +389,14 @@ class CacheTransferManager:
 
         except Exception as e:
             logger.warning(f"[R3] CTM failed to init routing aux data: {e}")
+
+    @staticmethod
+    def _cleanup_routing_resources(routing_swap_buffer, routing_host_view):
+        """Release routing SharedMemory on process exit. Called by weakref.finalize."""
+        if routing_swap_buffer is not None:
+            routing_swap_buffer.close()
+        if routing_host_view is not None:
+            routing_host_view.close()
 
     def _swap_routing(self, gpu_block_ids, cpu_block_ids, direction):
         """
