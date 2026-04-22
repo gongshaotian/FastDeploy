@@ -67,6 +67,7 @@ def save_routing_to_buffer_v2(
     tp_size: int,
     ep_size: int,
     tp_group: dist.communication.group.Group,
+    total_token_num: int = -1,
 ):
     token_num_per_rank = topk_ids.shape[0]
     if token_num_per_rank == 0:
@@ -74,7 +75,10 @@ def save_routing_to_buffer_v2(
     if tp_size > 1 and ep_size > 1:
         topk_ids_all = paddle.zeros([token_num_per_rank * tp_size, topk_ids.shape[1]], dtype=topk_ids.dtype)
         paddle.distributed.all_gather(topk_ids_all, topk_ids, tp_group)
-        topk_ids = topk_ids_all[:token_num_per_rank, :]
+        assert (
+            total_token_num >= token_num_per_rank
+        ), f"[R3] total_token_num={total_token_num} < token_num_per_rank={token_num_per_rank}"
+        topk_ids = topk_ids_all[:total_token_num, :]
 
     token_num, top_k = topk_ids.shape
     buf_max_tokens, num_moe_layers, buf_top_k = gpu_routing_buffer.shape
