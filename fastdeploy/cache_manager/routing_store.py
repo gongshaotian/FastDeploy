@@ -30,7 +30,10 @@ from typing import Optional, TypedDict
 
 import numpy as np
 import paddle
-from paddleformers.utils.log import logger
+
+from fastdeploy.utils import get_logger
+
+logger = get_logger("routing_cache_manager", "routing_cache_manager.log")
 
 from fastdeploy.config import RoutingReplayConfig
 

@@ -20,7 +20,10 @@ import multiprocessing.shared_memory
 from typing import Optional
 
 import numpy as np
-from paddleformers.utils.log import logger
+
+from fastdeploy.utils import get_logger
+
+logger = get_logger("routing_cache_manager", "routing_cache_manager.log")
 
 
 class RoutingHostBuffer:

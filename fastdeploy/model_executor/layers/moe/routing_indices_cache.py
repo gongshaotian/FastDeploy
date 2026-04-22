@@ -173,6 +173,7 @@ class RoutedExpertsCapturer:
         After forward, scatter GPU buffer routing data to routing_host_buffer.
         Called in step gap (post_process), not during forward. CUDAGraph compatible.
         """
+        assert slot_mapping.shape[0] == num_tokens
         if num_tokens == 0:
             return
 
