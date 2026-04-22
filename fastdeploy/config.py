@@ -378,6 +378,9 @@ class ModelConfig:
             # Because the ERNIE 4.5 config.json contains two sets of keys, adaptation is required.
             self.moe_num_shared_experts = self.n_shared_experts
 
+        if hasattr(self, "num_experts_per_tok") and not hasattr(self, "moe_k"):
+            self.moe_k = self.num_experts_per_tok
+
     def read_from_env(self):
         """
         Read configuration information from environment variables and update the object's attributes.
@@ -774,7 +777,7 @@ class SpeculativeConfig:
         "benchmark_mode": False,
         "enf_gen_phase_tag": False,
         "enable_draft_logprob": False,
-        "verify_strategy": "topp",
+        "verify_strategy": "target_match",
         "accept_policy": "normal",
     }
 
@@ -1745,6 +1748,9 @@ class RouterConfig:
         else:
             self.metrics_port = self.api_server_port
 
+    def __str__(self):
+        return json.dumps({key: value for key, value in self.__dict__.items()})
+
 
 class CommitConfig:
     """
@@ -1883,6 +1889,9 @@ class RoutingReplayConfig:
         Convert routing replay config to json string.
         """
         return json.dumps({key: value for key, value in self.__dict__.items()})
+
+    def __str__(self):
+        return self.to_json_string()
 
 
 class FDConfig:
