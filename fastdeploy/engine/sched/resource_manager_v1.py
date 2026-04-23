@@ -247,6 +247,10 @@ class ResourceManagerV1(ResourceManager):
             block_num = min(block_num, self.config.cache_config.max_block_num_per_seq)
         return block_num
 
+    def _is_decoding(self, request) -> bool:
+        """Return True if the request has finished prefill and is in the decoding phase."""
+        return request.num_computed_tokens >= request.need_prefill_tokens
+
     def _prepare_prefill_task(self, request, new_token_num):
         request.prefill_start_index = request.num_computed_tokens
         request.prefill_end_index = request.num_computed_tokens + new_token_num
@@ -283,7 +287,7 @@ class ResourceManagerV1(ResourceManager):
                 self.stop_flags[request.idx] = True  # 设置停止标志
                 del self.requests[request_id]
                 del self.req_dict[request_id]
-                self.to_be_aborted_req_id_set.remove(request_id)
+                self.to_be_aborted_req_id_set.discard(request_id)
         self.update_metrics()
 
     def _trigger_abort(self, request_id, scheduled_reqs):
@@ -295,7 +299,7 @@ class ResourceManagerV1(ResourceManager):
             abort_request.cached_block_num = 0
             scheduled_reqs.append(self._prepare_abort_task(abort_request))
             self.to_be_aborted_req_id_set.add(request_id)
-            self.waiting_abort_req_id_set.remove(request_id)
+            self.waiting_abort_req_id_set.discard(request_id)
 
     def _info_each_block(self):
         """
@@ -751,7 +755,7 @@ class ResourceManagerV1(ResourceManager):
             and self.config.scheduler_config.splitwise_role != "decode"
         ):
             with self.lock:
-                if request.num_computed_tokens >= request.need_prefill_tokens:  # request is decoding
+                if self._is_decoding(request):  # request is decoding
                     self.cache_manager.cache_output_blocks(request, self.config.cache_config.block_size)
 
     def schedule(self):
@@ -775,12 +779,10 @@ class ResourceManagerV1(ResourceManager):
                 if self.config.speculative_config is not None
                 else 1
             )
+            num_running_decode_reqs = sum(1 for req in self.running if self._is_decoding(req))
             token_budget = (
-                self.config.scheduler_config.max_num_batched_tokens
-                - self.config.scheduler_config.max_num_seqs * tokens_per_seq
+                self.config.scheduler_config.max_num_batched_tokens - num_running_decode_reqs * tokens_per_seq
             )
-            # temperatory solution to avoid negative token_budget
-            token_budget = max(token_budget, min(self.config.scheduler_config.max_num_batched_tokens, 512))
             need_abort_requests = []  # users trigger abortion
 
             # First, schedule the RUNNING requests.
@@ -793,7 +795,7 @@ class ResourceManagerV1(ResourceManager):
                     self.need_block_num_map[request.request_id] = SignalConsumer(need_block_num, 1)
                     self.need_block_num_signal.value[request.idx] = 0
 
-                if request.num_computed_tokens >= request.need_prefill_tokens:  # to be decoding
+                if self._is_decoding(request):  # to be decoding
                     if (
                         self.config.scheduler_config.splitwise_role == "prefill"
                     ):  # do not need to schedule for decoding
@@ -840,7 +842,7 @@ class ResourceManagerV1(ResourceManager):
                             # Prepare decoding task
                             scheduled_reqs.append(self._prepare_decode_task(request))
                         num_decoding_req_nums += 1
-                    token_budget -= 1
+                    # Decode token cost has been pre-deducted upfront (num_running_decode_reqs * tokens_per_seq).
                     if (
                         request.use_extend_tables
                         and request.request_id not in self.using_extend_tables_req_id
@@ -1576,6 +1578,8 @@ class ResourceManagerV1(ResourceManager):
                     del self.requests[req_id]
                     if req_id in self.req_dict:
                         del self.req_dict[req_id]
+                    self.waiting_abort_req_id_set.discard(req_id)
+                    self.to_be_aborted_req_id_set.discard(req_id)
 
             # Do not block the main thread here
             # Write cache to storage if kvcache_storage_backend is enabled

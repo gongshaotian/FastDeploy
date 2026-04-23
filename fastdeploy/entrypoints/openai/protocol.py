@@ -268,7 +268,7 @@ class ChatCompletionResponseChoice(BaseModel):
     logprobs: Optional[LogProbs] = None
     draft_logprobs: Optional[LogProbs] = None
     prompt_logprobs: Optional[PromptLogprobs] = None
-    finish_reason: Optional[Literal["stop", "length", "tool_calls", "recover_stop"]]
+    finish_reason: Optional[Literal["stop", "length", "tool_calls", "recover_stop", "abort"]]
     speculate_metrics: Optional[SpeculateMetrics] = None
 
 
@@ -334,7 +334,7 @@ class ChatCompletionResponseStreamChoice(BaseModel):
     logprobs: Optional[LogProbs] = None
     draft_logprobs: Optional[LogProbs] = None
     prompt_logprobs: Optional[PromptLogprobs] = None
-    finish_reason: Optional[Literal["stop", "length", "tool_calls", "recover_stop"]] = None
+    finish_reason: Optional[Literal["stop", "length", "tool_calls", "recover_stop", "abort"]] = None
     arrival_time: Optional[float] = None
     speculate_metrics: Optional[SpeculateMetrics] = None
 
@@ -370,7 +370,7 @@ class CompletionResponseChoice(BaseModel):
     draft_logprobs: Optional[CompletionLogprobs] = None
     prompt_logprobs: Optional[PromptLogprobs] = None
     reasoning_content: Optional[str] = None
-    finish_reason: Optional[Literal["stop", "length", "tool_calls", "recover_stop"]] = None
+    finish_reason: Optional[Literal["stop", "length", "tool_calls", "recover_stop", "abort"]] = None
     tool_calls: Optional[List[DeltaToolCall | ToolCall]] = None
     speculate_metrics: Optional[SpeculateMetrics] = None
 
@@ -417,7 +417,7 @@ class CompletionResponseStreamChoice(BaseModel):
     prompt_tokens: Optional[str] = None
     completion_tokens: Optional[str] = None
     reasoning_content: Optional[str] = None
-    finish_reason: Optional[Literal["stop", "length", "tool_calls", "recover_stop"]] = None
+    finish_reason: Optional[Literal["stop", "length", "tool_calls", "recover_stop", "abort"]] = None
     tool_calls: Optional[List[DeltaToolCall | ToolCall]] = None
     speculate_metrics: Optional[SpeculateMetrics] = None
 
