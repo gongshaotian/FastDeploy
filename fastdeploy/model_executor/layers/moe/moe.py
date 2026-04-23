@@ -720,7 +720,7 @@ class FusedMoE(nn.Layer):
             Tensor: Output tensor.s
 
         """
-        token_num = x.shape[0]
+
         topk_ids_hookfunc = None
         if self.enable_routing_replay:
             # When execute empty_input_forward forward_meta is None. When execute mtp layer routing_replay_table is None.
@@ -733,9 +733,8 @@ class FusedMoE(nn.Layer):
                     tp_size=self.fd_config.parallel_config.tensor_parallel_size,
                     ep_size=self.fd_config.parallel_config.expert_parallel_size,
                     tp_group=self.fd_config.parallel_config.tp_group,
-                    total_token_num=token_num,
+                    total_token_num=forward_meta.batch_id_per_token.shape[0],
                 )
-
         if current_platform.is_intel_hpu():
             out = self.forward_normal(
                 x, gate, forward_meta, topk_ids_hookfunc=topk_ids_hookfunc, shared_experts=shared_experts
@@ -743,6 +742,8 @@ class FusedMoE(nn.Layer):
             if self.reduce_results and (self.ep_size > 1 or self.tp_size > 1):
                 tensor_model_parallel_all_reduce_custom(out)
             return out
+
+        token_num = x.shape[0]
         if (
             self.ep_size > 1
             and self.attn_tp_size > 1
