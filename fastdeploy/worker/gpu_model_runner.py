@@ -2734,10 +2734,6 @@ class GPUModelRunner(ModelRunnerBase):
         # Recapture CUDAGraph
         if self.use_cudagraph:
             self.capture_model()
-        # Rollout Routing Replay
-        if self.fd_config.routing_replay_config.enable_routing_replay:
-            # TODO(gongshaotian): Delete suspend func
-            self.routing_replay_manager.update_suspend_routing_replay()
 
         # Send single
         self.dynamic_weight_manager.finalize_update(pid)
