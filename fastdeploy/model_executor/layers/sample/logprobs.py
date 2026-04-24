@@ -123,7 +123,18 @@ def gather_logprobs(
         indices = token_ids
         top_logprobs = token_logprobs
 
-    return LogprobsTensors(indices.cpu(), top_logprobs.cpu(), token_ranks.cpu())
+    if current_platform.is_cuda():
+        indices_cpu = paddle.empty_like(indices, device="cpu").pin_memory()
+        top_logprobs_cpu = paddle.empty_like(top_logprobs, device="cpu").pin_memory()
+        token_ranks_cpu = paddle.empty_like(token_ranks, device="cpu").pin_memory()
+        indices_cpu.copy_(indices, False)
+        top_logprobs_cpu.copy_(top_logprobs, False)
+        token_ranks_cpu.copy_(token_ranks, False)
+    else:
+        indices_cpu = indices.cpu()
+        top_logprobs_cpu = top_logprobs.cpu()
+        token_ranks_cpu = token_ranks.cpu()
+    return LogprobsTensors(indices_cpu, top_logprobs_cpu, token_ranks_cpu)
 
 
 def build_output_logprobs(
@@ -133,7 +144,7 @@ def build_output_logprobs(
     is_naive: bool = False,
     logprobs_mode: str = "default",
     compute_logprobs_fn: Optional[Callable] = None,
-) -> Tuple[Optional[LogprobsTensors], Optional[paddle.Tensor]]:
+) -> Tuple[Optional[LogprobsTensors], Optional[paddle.Tensor], Optional[paddle.Tensor]]:
     """
     Build logprobs output for both NAIVE and speculative (MTP/Ngram) modes.
 
@@ -153,14 +164,11 @@ def build_output_logprobs(
             scaling and top_p normalization. Used when logprobs_mode == "raw_logprobs".
 
     Returns:
-        tuple: (logprobs_tensors, cu_batch_token_offset)
+        tuple: (logprobs_tensors, cu_batch_token_offset, output_logits)
     """
     num_logprobs = sampling_metadata.max_num_logprobs
     logprobs_tensors = None
     cu_batch_token_offset = None
-
-    if num_logprobs is None:
-        return logprobs_tensors, cu_batch_token_offset
 
     real_bsz = share_inputs["seq_lens_this_time"].shape[0]
 
@@ -208,6 +216,10 @@ def build_output_logprobs(
         mask = idx < share_inputs["accept_num"].unsqueeze(1)
         token_ids = paddle.masked_select(share_inputs["accept_tokens"], mask)
 
+    # Adapt for sampling mask
+    if num_logprobs is None:
+        return None, None, output_logits
+
     # Compute logprobs with temperature scaling and top_p normalization
     if logprobs_mode == "raw_logprobs":
         raw_logprobs = compute_logprobs_fn(output_logits, sampling_metadata)
@@ -217,5 +229,32 @@ def build_output_logprobs(
         raw_logprobs = F.log_softmax(output_logits, axis=-1)
 
     logprobs_tensors = gather_logprobs(raw_logprobs, num_logprobs, token_ids=token_ids)
+    # output_logits use to compute sampling_mask
+    return logprobs_tensors, cu_batch_token_offset, output_logits
 
-    return logprobs_tensors, cu_batch_token_offset
+
+def logprobs_renormalize_with_logz(logprobs: paddle.Tensor, logz, logprobs_tensors: LogprobsTensors):
+    """
+    Renormalize logprobs to match truncated sampling distribution.
+    Args:
+        logprobs: tensor [B, max_num_logprobs + 1]
+        logz: [B], log(sum(probs in candidate set K)) for each request.
+              Can be np.ndarray or paddle.Tensor (CPU pinned memory).
+        logprobs_tensors: LogprobsTensors
+    """
+    if isinstance(logz, paddle.Tensor):
+        logz = logz.astype(logprobs.dtype)
+    else:
+        logz = paddle.to_tensor(logz, dtype=logprobs.dtype)
+    # Renormalize: log π_masked = log π_full - log Z_K
+    # Only normalize valid candidates; padding positions use -inf
+    valid_mask = paddle.isfinite(logprobs)
+    normalized_logprobs = paddle.where(
+        valid_mask, logprobs - logz.unsqueeze(1), paddle.full_like(logprobs, float("-inf"))
+    )
+    # Update logprobs_tensors with normalized values
+    return LogprobsTensors(
+        logprob_token_ids=logprobs_tensors.logprob_token_ids,
+        logprobs=normalized_logprobs,
+        selected_token_ranks=logprobs_tensors.selected_token_ranks,
+    )

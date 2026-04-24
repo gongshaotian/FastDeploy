@@ -126,6 +126,7 @@ class GPUModelRunner(ModelRunnerBase):
         self.spec_method = self.fd_config.speculative_config.method
         self.speculative_decoding = self.spec_method is not None
         self.enable_logprob = fd_config.model_config.enable_logprob
+        self.enable_keep_sampling_mask = fd_config.model_config.enable_keep_sampling_mask
         self.enable_early_stop = self.fd_config.early_stop_config.enable_early_stop
         self.is_pooling_model = self.fd_config.model_config.runner_type == "pooling"
         self.ori_vocab_size = self.fd_config.model_config.ori_vocab_size
@@ -236,6 +237,27 @@ class GPUModelRunner(ModelRunnerBase):
         # Rollout routing replay config
         self.routing_replay_manager = None
 
+        # ZMQ side-channel for sampling_mask in non-FD_USE_GET_SAVE_OUTPUT_V1 path
+        self.sampling_mask_zmq_client = None
+        if not envs.FD_USE_GET_SAVE_OUTPUT_V1 and self.enable_keep_sampling_mask:
+            rank_id = self.parallel_config.local_data_parallel_id
+            port = self.parallel_config.engine_worker_queue_port[rank_id]
+            self.sampling_mask_zmq_client = ZmqIpcClient(
+                name=f"sampling_mask_output_rank_{rank_id}_{port}", mode=zmq.PUSH
+            )
+            self.sampling_mask_zmq_client.connect()
+            logger.info(f"create send zmq sampling_mask_output_rank_{rank_id}_{port}")
+
+        self.sampling_mask_async_queue = None
+        if self.sampling_mask_zmq_client is not None:
+            self.sampling_mask_async_queue = queue.Queue()
+            self._sampling_mask_send_thread = Thread(
+                target=self._async_sampling_mask_send_loop,
+                daemon=True,
+                name="WorkerAsyncSamplingMaskSend",
+            )
+            self._sampling_mask_send_thread.start()
+
         self.zmq_client = None
         self.async_output_queue = None
         if envs.FD_USE_GET_SAVE_OUTPUT_V1:
@@ -285,6 +307,27 @@ class GPUModelRunner(ModelRunnerBase):
                 self.zmq_client.send_pyobj(output)
             except Exception as e:
                 logger.exception("Exception in async output loop: %s", e)
+
+    def _async_sampling_mask_send_loop(self):
+        """Background thread: serialize and send sampling_mask over ZMQ."""
+        while True:
+            try:
+                mask_list, accept_nums = self.sampling_mask_async_queue.get()
+                if accept_nums is None:
+                    # Normal (non-speculative) path
+                    mask_dict = {i: arr.tolist() for i, arr in enumerate(mask_list)}
+                else:
+                    # Speculative path: group by accept_num
+                    mask_dict = {}
+                    offset = 0
+                    for i, n in enumerate(accept_nums):
+                        n = int(n)
+                        if n > 0:
+                            mask_dict[i] = [arr.tolist() for arr in mask_list[offset : offset + n]]
+                        offset += n
+                self.sampling_mask_zmq_client.send_pyobj(mask_dict)
+            except Exception as e:
+                logger.exception("Exception in async sampling_mask send loop: %s", e)
 
     def exist_prefill(self):
         """
@@ -1224,6 +1267,7 @@ class GPUModelRunner(ModelRunnerBase):
             top_p_normalized_logprobs=self.share_inputs["top_p_normalized_logprobs"],
             logits_processors=self.share_inputs["logits_processors"],
             share_inputs=self.share_inputs,
+            keep_sampling_mask=self.enable_keep_sampling_mask,
         )
         return token_num, token_num_event
 
@@ -2472,13 +2516,14 @@ class GPUModelRunner(ModelRunnerBase):
                 sampler_output=sampler_output,
                 model_output=model_output_data,
                 share_inputs=self.share_inputs,
-                proposer_share_inputs=self.proposer.model_inputs,
                 local_rank=self.local_rank,
                 tensor_parallel_rank=self.parallel_config.tensor_parallel_rank,
                 save_each_rank=self.parallel_config.use_ep,
+                sampling_mask_async_queue=self.sampling_mask_async_queue,
                 is_mtp_prefill=(
                     self.spec_method == SpecMethod.MTP and self.scheduler_config.splitwise_role == "prefill"
                 ),
+                proposer_share_inputs=self.proposer.model_inputs if self.spec_method == SpecMethod.MTP else None,
             )
         else:
             save_output_normal(
@@ -2487,6 +2532,7 @@ class GPUModelRunner(ModelRunnerBase):
                 share_inputs=self.share_inputs,
                 async_output_queue=self.async_output_queue,
                 save_each_rank=self.parallel_config.use_ep,
+                sampling_mask_async_queue=self.sampling_mask_async_queue,
             )
 
     def _pool(self, hidden_states: paddle.Tensor, num_running_requests: int) -> Optional[ModelRunnerOutput]:

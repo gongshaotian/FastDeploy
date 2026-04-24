@@ -83,6 +83,14 @@ class TokenProcessor:
 
         self.speculative_decoding = self.cfg.speculative_config.method is not None
         self.use_logprobs = self.cfg.model_config.enable_logprob
+        self.use_sampling_mask = getattr(self.cfg.model_config, "enable_keep_sampling_mask", False)
+        if not envs.FD_USE_GET_SAVE_OUTPUT_V1 and self.use_sampling_mask:
+            rank_id = self.cfg.parallel_config.local_data_parallel_id
+            port = self.cfg.parallel_config.engine_worker_queue_port[rank_id]
+            self.sampling_mask_zmq_server = ZmqIpcServer(
+                name=f"sampling_mask_output_rank_{rank_id}_{port}", mode=zmq.PULL
+            )
+            llm_logger.info(f"create zmq sampling_mask_output_rank_{rank_id}_{port}")
         self.enable_draft_logprob = self.cfg.speculative_config.enable_draft_logprob
 
         if self.speculative_decoding:
@@ -418,6 +426,8 @@ class TokenProcessor:
                             result.prompt_logprobs = stream_data.prompt_logprobs
                         except Exception as e:
                             llm_logger.warning(f"Failed to parse prompt_logprobs from StreamTransferData: {e}")
+                if getattr(stream_data, "sampling_mask", None) is not None:
+                    result.outputs.sampling_mask = stream_data.sampling_mask.tolist()
                 if self.tokens_counter[task_id] == 0:
                     if task.messages is not None:
                         result.prompt = task.messages
@@ -630,8 +640,11 @@ class TokenProcessor:
                         self.prefill_result_status[finished_task_id[0]] = finished_task_id[1]
                 if task_id in self.prefill_result_status:
                     if self.prefill_result_status[task_id] != "finished":
-                        result.error_code = 400
-                        result.error_message = f"{task_id} failed to {self.prefill_result_status[task_id]}"
+                        result.error_code = 501
+                        result.error_msg = (
+                            f"PD Error: prefill failed to send cache to decode, "
+                            f"{task_id}, {self.prefill_result_status[task_id]}"
+                        )
                     llm_logger.info(
                         f"wait for sending cache, request_id: {task_id}, cost seconds: {time.time()-start_time:.5f}"
                     )
@@ -836,10 +849,19 @@ class TokenProcessor:
             batch = self.output_tokens[1, 0]
             tokens = tokens[2 : batch + 2]
 
+        # Receive sampling constraints per request from ZMQ side-channel (if enabled).
+        # The worker sends a dict {batch_id: sparse_vocab_indices} each step,
+        # where the value is a list[int] or list[list[int]] of allowed token ids
+        sampling_masks_per_request = {}
+        if self.use_sampling_mask and not envs.FD_USE_GET_SAVE_OUTPUT_V1 and hasattr(self, "sampling_mask_zmq_server"):
+            _, mask_data = self.sampling_mask_zmq_server.receive_pyobj_once(block=True)
+            if mask_data is not None and isinstance(mask_data, dict):
+                sampling_masks_per_request = mask_data
+
         batch_result = list()
         # reschedule
         for i in range(batch):
-            if self.resource_manager.stop_flags[i]:
+            if self.resource_manager.stop_flags[i] or self.resource_manager.tasks_list[i] is None:
                 continue
 
             recovery_stop = False
@@ -969,6 +991,9 @@ class TokenProcessor:
             if task.get("multimodal_inputs", None):
                 result.num_input_image_tokens = task.multimodal_inputs.get("num_input_image_tokens", 0)
                 result.num_input_video_tokens = task.multimodal_inputs.get("num_input_video_tokens", 0)
+
+            if self.use_sampling_mask and i in sampling_masks_per_request:
+                result.outputs.sampling_mask = sampling_masks_per_request[i]
 
             if is_prefill and len(token_ids) > 1:
                 result.outputs.draft_token_ids = copy.deepcopy(token_ids)

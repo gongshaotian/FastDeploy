@@ -205,6 +205,7 @@ class Request:
             self.metrics = RequestMetrics()
         else:
             self.metrics = metrics
+        self.metrics.prompt_token_ids_len = self.prompt_token_ids_len
         # from ChatCompletionRequest or CompletionRequest
         self.user = user
         self.metadata = metadata
@@ -727,6 +728,10 @@ class CompletionOutput:
     delta_message: Optional[DeltaMessage] = None
     multipart: Optional[list[Any]] = None
     num_image_tokens: Optional[int] = None
+    # Sparse indices of retained vocab ids:
+    #   - Non-MTP: list[int]
+    #   - MTP: list[list[int]]
+    sampling_mask: Optional[Any] = None
 
     def to_dict(self):
         """
@@ -745,6 +750,7 @@ class CompletionOutput:
             "text": self.text,
             "reasoning_content": self.reasoning_content,
             "reasoning_token_num": self.reasoning_token_num,
+            "sampling_mask": self.sampling_mask,
         }
 
     @classmethod
@@ -872,6 +878,7 @@ class RequestMetrics:
     speculate_metrics: Optional[SpeculateMetrics] = None
 
     # cache related
+    prompt_token_ids_len: Optional[int] = None
     gpu_cache_token_num: Optional[int] = 0
     cpu_cache_token_num: Optional[int] = 0
     storage_cache_token_num: Optional[int] = 0
