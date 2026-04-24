@@ -217,7 +217,7 @@ class RoutedExpertsCapturer:
         increase_num = seq_lens_this_time.numpy()
 
         positions = []
-        for i in range(self.max_num_seqs):
+        for i in range(seq_lens_this_time.shape[0]):
             if seq_lens_this_time[i] == 0:
                 positions.append([])
                 continue
