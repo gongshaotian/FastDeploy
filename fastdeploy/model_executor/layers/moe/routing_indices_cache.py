@@ -219,7 +219,7 @@ class RoutedExpertsCapturer:
 
         positions = []
         for i in range(seq_lens_this_time.shape[0]):
-            if seq_lens_this_time[i] == 0:
+            if increase_num[i] == 0:
                 positions.append([])
                 continue
             repeated_base = np.repeat(starts[i], increase_num[i])
