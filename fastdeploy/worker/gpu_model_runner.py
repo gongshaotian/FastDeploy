@@ -1285,7 +1285,10 @@ class GPUModelRunner(ModelRunnerBase):
         Results are stored in self.forward_meta.
         """
         # NOTE(zhushengguang): Only support MLAAttentionBackend and DSAAttentionBackend currently.
-        if not isinstance(self.attn_backends[0], (MLAAttentionBackend, DSAAttentionBackend)):
+        # Also needed when R3 (Routing Replay) is enabled for slot_mapping_buffer computation.
+        needs_slot_mapping = isinstance(self.attn_backends[0], (MLAAttentionBackend, DSAAttentionBackend))
+        needs_slot_mapping = (self.routing_replay_manager is not None) or needs_slot_mapping
+        if not needs_slot_mapping:
             return
         current_total_tokens = self.forward_meta.ids_remove_padding.shape[0]
         position_ids = self.share_inputs["position_ids_buffer"][:current_total_tokens]
@@ -2146,6 +2149,8 @@ class GPUModelRunner(ModelRunnerBase):
         if model_output_data is not None:
             # synchronizes the async DtoH copies of sampled_token_ids.
             post_process_event.synchronize()
+            if self.routing_replay_manager is not None:
+                self.routing_replay_manager.flush_pending_save()
             self._save_model_output(model_output_data, sampler_output)
 
     def execute_model_overlap(
@@ -2162,6 +2167,8 @@ class GPUModelRunner(ModelRunnerBase):
         if self._cached_model_output_data is not None:
             # synchronizes the async DtoH copies of sampled_token_ids.
             self._cached_post_process_event.synchronize()
+            if self.routing_replay_manager is not None:
+                self.routing_replay_manager.flush_pending_save()
             self._save_model_output(
                 self._cached_model_output_data,
                 self._cached_sampler_output,
@@ -2220,11 +2227,6 @@ class GPUModelRunner(ModelRunnerBase):
 
         p_done_idxs = self._get_p_done_idxs_gd(model_forward_batch, num_running_requests)
         self.sampler.pre_process(p_done_idxs)
-        if self.fd_config.routing_replay_config.enable_routing_replay:
-            self.routing_replay_manager.pending_update_positions = self.routing_replay_manager.get_token_positions(
-                seq_lens_decoder=self.share_inputs["seq_lens_decoder"],
-                seq_lens_this_time=self.share_inputs["seq_lens_this_time"],
-            )
 
         # Update state of logits processor
         for proc in self.sampling_metadata.logits_processors:
@@ -3205,6 +3207,5 @@ class GPUModelRunner(ModelRunnerBase):
         # Use updated block number
         self.routing_replay_manager = RoutingReplayManager(
             fd_config=self.fd_config,
-            block_table=self.share_inputs["block_tables"],
             total_block_num=self.num_gpu_blocks,
         )

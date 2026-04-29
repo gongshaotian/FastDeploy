@@ -110,9 +110,8 @@ class RoutedExpertsCapturer:
     Does NOT manage request lifecycle — that is handled by RoutingCacheManager on the Engine side.
     """
 
-    def __init__(self, fd_config: FDConfig, block_table, total_block_num):
+    def __init__(self, fd_config: FDConfig, total_block_num: int):
         self.fd_config = fd_config
-        self.block_table = block_table
         self.max_num_seqs = fd_config.scheduler_config.max_num_seqs
 
         # Read routing params from centralized config
@@ -125,20 +124,23 @@ class RoutedExpertsCapturer:
         logger.info(f"[R3] RoutedExpertsCapturer config: {rrc}")
 
         self._init_routing_cache(dtype=self.routing_dtype, total_block_num=total_block_num)
-        self.pending_update_positions = None
 
     def _init_routing_cache(self, dtype: str, total_block_num: int):
-        """Initialize GPU transient buffer and prepare lazy SharedMemory attach."""
+        """Initialize GPU transient buffer, staging buffers, and CPU pinned buffers."""
         max_num_kv_tokens = total_block_num * self.fd_config.cache_config.block_size
 
         # Small GPU transient buffer: only current step's token routing
         # TODO(Chengyanfu): Use max_num_batched_tokens to replace get_max_chunk_tokens()
         max_num_batched_tokens = self.fd_config.get_max_chunk_tokens()
-        self.gpu_routing_buffer = paddle.full(
-            shape=[max_num_batched_tokens, self.num_moe_layers, self.moe_top_k],
-            fill_value=-1,
-            dtype=dtype,
-        )
+        shape = [max_num_batched_tokens, self.num_moe_layers, self.moe_top_k]
+
+        self.gpu_routing_buffer = paddle.full(shape=shape, fill_value=-1, dtype=dtype)
+        self.routing_staging_buf = paddle.full(shape=shape, fill_value=-1, dtype=dtype)
+        self.slot_mapping_staging_buf = paddle.zeros([max_num_batched_tokens], dtype=paddle.int64)
+
+        self.cpu_routing_buf = paddle.zeros(shape, dtype=dtype).pin_memory()
+        self.cpu_slot_mapping_buf = paddle.zeros([max_num_batched_tokens], dtype=paddle.int64).pin_memory()
+        self._pending_save = None  # {"num_tokens": int}
 
         # Lazy attach to SharedMemory routing_host_buffer (created by Engine after profiling)
         self.routing_host_view = None
@@ -173,67 +175,57 @@ class RoutedExpertsCapturer:
                 "Routing capture will be skipped."
             )
 
-    def save_captured_routing(self, num_tokens: int, slot_mapping: np.ndarray):
+    def prepare_pending_save(self, num_tokens: int, slot_mapping_gpu: paddle.Tensor):
         """
-        After forward, scatter GPU buffer routing data to routing_host_buffer.
-        Called in step gap (post_process), not during forward. CUDAGraph compatible.
-        """
-        assert slot_mapping.shape[0] == num_tokens
-        if num_tokens == 0:
-            return
+        Enqueue D2D + async D2H for routing data and slot_mapping.
+        Must be called before post_process_event.record().
+        All ops are enqueued on the current CUDA stream; CPU returns immediately.
 
-        # Lazy attach to SharedMemory (Engine creates it after profiling completes)
-        if self.routing_host_view is None and not self._routing_host_view_attach_attempted:
-            self._try_attach_routing_host_view()
+        1. D2D (non-blocking): gpu_routing_buffer → routing_staging_buf
+        2. D2D (non-blocking): slot_mapping_gpu → slot_mapping_staging_buf
+        3. async D2H: routing_staging_buf → cpu_routing_buf
+        4. async D2H: slot_mapping_staging_buf → cpu_slot_mapping_buf
+        """
+        if num_tokens > 0:
+            # D2D: GPU → staging
+            self.routing_staging_buf[:num_tokens].copy_(self.gpu_routing_buffer[:num_tokens], False)
+            self.slot_mapping_staging_buf[:num_tokens].copy_(slot_mapping_gpu[:num_tokens], False)
+            # async D2H: staging → CPU pinned
+            self.cpu_routing_buf[:num_tokens].copy_(self.routing_staging_buf[:num_tokens], False)
+            self.cpu_slot_mapping_buf[:num_tokens].copy_(self.slot_mapping_staging_buf[:num_tokens], False)
+            self._pending_save = {"num_tokens": num_tokens}
+        else:
+            self._pending_save = None
+
+    def flush_pending_save(self):
+        """
+        Pure CPU operation. Called after post_process_event.synchronize(),
+        which guarantees all D2D and D2H transfers have completed.
+        Scatter from CPU pinned buffers to SharedMemory.
+        """
+        pending = self._pending_save
+        if pending is None:
+            return
+        self._pending_save = None
 
         if self.routing_host_view is None:
-            return
+            if not self._routing_host_view_attach_attempted:
+                self._try_attach_routing_host_view()
+            if self.routing_host_view is None:
+                return
 
-        # D2H copy: GPU → CPU numpy, then scatter to SharedMemory
-        data = self.gpu_routing_buffer[:num_tokens].cpu().numpy()
-        self.routing_host_view.scatter(slot_mapping, data)
-
-    def compute_slot_mapping_flat(self, positions) -> np.ndarray:
-        """
-        Compute flat slot_mapping for all tokens in the step.
-        Returns a 1D numpy array of slot indices.
-        """
-        all_slots = []
-        block_size = self.fd_config.cache_config.block_size
-        for batch_id, position in enumerate(positions):
-            if len(position) == 0:
-                continue
-            block_table_indices = position // block_size
-            token_block_ids = self.block_table[batch_id, block_table_indices]
-            block_offset = position % block_size
-            token_cache_ids = np.array(token_block_ids) * block_size + block_offset
-            all_slots.append(token_cache_ids)
-        if all_slots:
-            return np.concatenate(all_slots)
-        return np.array([], dtype=np.int64)
-
-    def get_token_positions(self, seq_lens_decoder, seq_lens_this_time):
-        """Get token position of each sequence in a batch."""
-        starts = seq_lens_decoder.numpy()
-        increase_num = seq_lens_this_time.numpy()
-
-        positions = []
-        for i in range(seq_lens_this_time.shape[0]):
-            if increase_num[i] == 0:
-                positions.append([])
-                continue
-            repeated_base = np.repeat(starts[i], increase_num[i])
-            positions.append(repeated_base + np.arange(0, increase_num[i]))
-
-        return positions
+        num_tokens = pending["num_tokens"]
+        data = self.cpu_routing_buf[:num_tokens].numpy()
+        slot_np = self.cpu_slot_mapping_buf[:num_tokens].numpy()
+        self.routing_host_view.scatter(slot_np, data)
 
     def get_gpu_routing_buffer(self) -> paddle.Tensor:
         return self.gpu_routing_buffer
 
     def clear(self):
-        """Clear GPU buffer and pending positions. Used during RL round cleanup."""
+        """Clear GPU buffer and pending save state. Used during RL round cleanup."""
         self.gpu_routing_buffer.fill_(-1)
-        self.pending_update_positions = None
+        self._pending_save = None
 
 
 # Backward compatibility alias
