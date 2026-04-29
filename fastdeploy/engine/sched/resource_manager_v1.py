@@ -288,6 +288,8 @@ class ResourceManagerV1(ResourceManager):
                 del self.requests[request_id]
                 del self.req_dict[request_id]
                 self.to_be_aborted_req_id_set.discard(request_id)
+                self.waiting_abort_req_id_set.discard(request_id)
+                llm_logger.debug(f"request_id:{request_id} recycle end")
         self.update_metrics()
 
     def _trigger_abort(self, request_id, scheduled_reqs):
@@ -776,7 +778,7 @@ class ResourceManagerV1(ResourceManager):
             error_reqs: list[tuple[str, str]] = []
             tokens_per_seq = (
                 (self.config.speculative_config.num_speculative_tokens + 1)
-                if self.config.speculative_config is not None
+                if self.config.speculative_config is not None and self.config.speculative_config.method is not None
                 else 1
             )
             num_running_decode_reqs = sum(1 for req in self.running if self._is_decoding(req))
@@ -1615,7 +1617,9 @@ class ResourceManagerV1(ResourceManager):
 
     def update_metrics(self, verbose=False):
         # Update metrics
-        num_tasks = sum([1 if task else 0 for task in self.tasks_list])
+        num_requests_running = len(self.running)
+        num_requests_waiting = len(self.waiting)
+        num_requests_queuing = max(int(getattr(self, "scheduler_unhandled_request_num", 0) or 0), 0)
         blocks_used_by_tasks = set()
         for task in self.tasks_list:
             if task is not None:
@@ -1624,10 +1628,14 @@ class ResourceManagerV1(ResourceManager):
         main_process_metrics.available_gpu_block_num.set(self.total_block_number() - len(blocks_used_by_tasks))
         main_process_metrics.batch_size.set(self.max_num_seqs - self.available_batch())
         main_process_metrics.gpu_cache_usage_perc.set(self.get_gpu_cache_usage_perc())
-        main_process_metrics.num_requests_running.set(len(self.running))
-        main_process_metrics.num_requests_waiting.set(num_tasks - len(self.running))
+        main_process_metrics.num_requests_running.set(num_requests_running)
+        main_process_metrics.num_requests_waiting.set(num_requests_waiting)
+        main_process_metrics.num_requests_queuing.set(num_requests_queuing)
         if verbose:
-            llm_logger.info(f"update metrics: running={len(self.running)}, waiting={num_tasks - len(self.running)}")
+            llm_logger.info(
+                f"update metrics: running={num_requests_running}, "
+                f"waiting={num_requests_waiting}, queuing={num_requests_queuing}"
+            )
 
     def log_status(self):
         llm_logger.info(

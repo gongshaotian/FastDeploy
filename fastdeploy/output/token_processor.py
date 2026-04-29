@@ -331,8 +331,7 @@ class TokenProcessor:
                 llm_logger.info(f"{self.resource_manager.info()}")
                 if self.cfg.speculative_config.method:
                     self._compute_speculative_status()
-                if not is_prefill:
-                    self._record_completion_metrics(task, current_time)
+                self._record_completion_metrics(task, current_time)
                 self._finalize_routing(task_id, task, result, is_prefill)
                 self._recycle_resources(task_id, batch_id, task, result, is_prefill)
                 break
@@ -359,6 +358,7 @@ class TokenProcessor:
                     ):
                         llm_logger.info(f"start to recycle abort request_id {task_id}")
                         self.resource_manager.recycle_abort_task(task_id)
+                        self._put_abort_results(task)
                     if (
                         task_id in self.resource_manager.to_be_rescheduled_request_id_set
                         and token_ids[-1] == PREEMPTED_TOKEN_ID
@@ -632,6 +632,8 @@ class TokenProcessor:
         if is_prefill:
             start_time = time.time()
             result.metrics.wait_for_sending_cache_time = time.time()
+            trace_print(LoggingEventName.CHECK_CACHE_TRANSFER_START, task_id, getattr(task, "user", ""))
+
             while True:
                 finished_task_ids = self.engine_worker_queue.get_finished_req()
                 if len(finished_task_ids) > 0:
@@ -645,9 +647,11 @@ class TokenProcessor:
                             f"PD Error: prefill failed to send cache to decode, "
                             f"{task_id}, {self.prefill_result_status[task_id]}"
                         )
+                    self.prefill_result_status.pop(task_id)
                     llm_logger.info(
                         f"wait for sending cache, request_id: {task_id}, cost seconds: {time.time()-start_time:.5f}"
                     )
+                    trace_print(LoggingEventName.CHECK_CACHE_TRANSFER_END, task_id, getattr(task, "user", ""))
                     result.metrics.send_request_output_to_decode_time = time.time()
                     self.split_connector.send_first_token(task.disaggregate_info, [result])
                     if envs.ENABLE_V1_KVCACHE_SCHEDULER:
@@ -883,6 +887,7 @@ class TokenProcessor:
                     if envs.ENABLE_V1_KVCACHE_SCHEDULER:
                         if task_id in self.resource_manager.to_be_aborted_req_id_set:
                             self.resource_manager.recycle_abort_task(task_id)
+                            self._put_abort_results(task)
                         if task_id in self.resource_manager.to_be_rescheduled_request_id_set:
                             self.resource_manager.reschedule_preempt_task(task_id)
                     continue
@@ -917,6 +922,7 @@ class TokenProcessor:
                             and token_id == PREEMPTED_TOKEN_ID
                         ):
                             self.resource_manager.recycle_abort_task(task_id)
+                            self._put_abort_results(task)
                             llm_logger.info(f"sync abortion for request_id {task_id} done.")
                         if (
                             task_id in self.resource_manager.to_be_rescheduled_request_id_set
@@ -1071,10 +1077,8 @@ class TokenProcessor:
                     llm_logger.info(f"{self.resource_manager.info()}")
                     if self.cfg.speculative_config.method:
                         self._compute_speculative_status(result)
-                    if not is_prefill:
-                        self._record_completion_metrics(task, current_time)
+                    self._record_completion_metrics(task, current_time)
                     llm_logger.info(f"task {task_id} received eos token. Recycling.")
-
                     if (
                         envs.ENABLE_V1_KVCACHE_SCHEDULER
                         and self.cfg.cache_config.enable_prefix_caching
@@ -1116,13 +1120,21 @@ class TokenProcessor:
 
     def _record_completion_metrics(self, task, current_time):
         """Record metrics when request completes"""
+        role = self.cfg.scheduler_config.splitwise_role
         metrics = task.metrics
-        if metrics.engine_recv_first_token_time:
-            decode_time = current_time - metrics.engine_recv_first_token_time
-            main_process_metrics.request_decode_time.observe(decode_time)
-        trace_print(LoggingEventName.INFERENCE_END, task.request_id, getattr(task, "user", ""))
+
+        if role in ("mixed", "decode"):
+            if metrics.engine_recv_first_token_time:
+                decode_time = current_time - metrics.engine_recv_first_token_time
+                main_process_metrics.request_decode_time.observe(decode_time)
+            trace_print(LoggingEventName.INFERENCE_END, task.request_id, getattr(task, "user", ""))
+
+        if role == "prefill":
+            trace_print(LoggingEventName.PREFILL_INFERENCE_END, task.request_id, getattr(task, "user", ""))
+        elif role == "decode":
+            trace_print(LoggingEventName.DECODE_INFERENCE_END, task.request_id, getattr(task, "user", ""))
+
         trace_print(LoggingEventName.POSTPROCESSING_START, task.request_id, getattr(task, "user", ""))
-        main_process_metrics.num_requests_running.dec(1)
         main_process_metrics.request_success_total.inc()
         main_process_metrics.request_inference_time.observe(current_time - metrics.inference_start_time)
         main_process_metrics.request_generation_tokens.observe(self.tokens_counter[task.request_id])
@@ -1182,6 +1194,33 @@ class TokenProcessor:
         for i in range(accept_num):
             self.accept_token_num_per_head_per_request[req_id][i] += 1
             self.accept_token_num_per_head[i] += 1
+
+    def _put_abort_results(self, task):
+        now = time.time()
+        eos_token_ids = getattr(task, "eos_token_ids", [0])
+        abort_metrics = copy.copy(task.metrics)
+        for field in (
+            "arrival_time",
+            "inference_start_time",
+            "engine_recv_latest_token_time",
+            "engine_recv_first_token_time",
+            "request_start_time",
+        ):
+            if not getattr(abort_metrics, field):
+                setattr(abort_metrics, field, now)
+        result = RequestOutput(
+            request_id=task.request_id,
+            finished=True,
+            outputs=CompletionOutput(
+                index=0,
+                send_idx=self.tokens_counter.get(task.request_id),
+                token_ids=[eos_token_ids[0]],
+            ),
+            metrics=abort_metrics,
+            error_code=200,
+            error_msg="Aborted",
+        )
+        self.cached_generated_tokens.put_results([result])
 
     def clear_data(self):
         if envs.ENABLE_V1_KVCACHE_SCHEDULER:

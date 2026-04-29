@@ -45,6 +45,12 @@ from fastdeploy.model_executor.layers.attention.append_attn_backend import (
 from fastdeploy.model_executor.layers.attention.base_attention_backend import (
     AttentionBackend,
 )
+from fastdeploy.model_executor.layers.attention.dsa_attention_backend import (
+    DSAAttentionBackend,
+)
+from fastdeploy.model_executor.layers.attention.mla_attention_backend import (
+    MLAAttentionBackend,
+)
 from fastdeploy.model_executor.layers.moe.routing_indices_cache import (
     RoutingReplayManager,
 )
@@ -78,6 +84,7 @@ else:
         speculate_schedule_cache,
         set_data_ipc,
         unset_data_ipc,
+        get_position_ids_and_mask_encoder_batch,
     )
 
 import zmq
@@ -97,7 +104,7 @@ from fastdeploy.model_executor.pre_and_post_process import (
     pre_process,
     rebuild_padding,
     save_output_normal,
-    save_output_specualate,
+    save_output_speculate,
 )
 from fastdeploy.output.pooler import PoolerOutput
 from fastdeploy.worker.model_runner_base import (
@@ -137,8 +144,8 @@ class GPUModelRunner(ModelRunnerBase):
                 if fd_config.model_config.max_logprobs == -1
                 else fd_config.model_config.max_logprobs
             )
-        self.temp_scaled_logprobs = True
-        self.top_p_normalized_logprobs = True
+        self.temp_scaled_logprobs = False
+        self.top_p_normalized_logprobs = False
         self.prompt_logprobs_reqs: dict[str, Request] = {}
         self.in_progress_prompt_logprobs: dict[str, LogprobsTensors] = {}
         self.forward_batch_reqs_list: list[Request] = [None for _ in range(self.scheduler_config.max_num_seqs)]
@@ -1177,7 +1184,11 @@ class GPUModelRunner(ModelRunnerBase):
             for req in self.forward_batch_reqs_list
             if req is not None and req.sampling_params is not None and req.sampling_params.logprobs is not None
         ]
-        if len(logprobs_reqs):
+        self.temp_scaled_logprobs = any(req.sampling_params.temp_scaled_logprobs for req in logprobs_reqs)
+        self.top_p_normalized_logprobs = any(
+            req.sampling_params.top_p_normalized_logprobs and req.sampling_params.top_p != 1.0 for req in logprobs_reqs
+        )
+        if logprobs_reqs:
             self.max_logprobs = (
                 max(
                     [
@@ -1187,10 +1198,6 @@ class GPUModelRunner(ModelRunnerBase):
                 )
                 if not self.speculative_decoding
                 else 20
-            )
-            self.temp_scaled_logprobs = any(req.sampling_params.temp_scaled_logprobs for req in logprobs_reqs)
-            self.top_p_normalized_logprobs = any(
-                req.sampling_params.top_p_normalized_logprobs for req in logprobs_reqs
             )
         elif self.enable_logprob:
             self.max_logprobs = None if not self.speculative_decoding else 0
@@ -1270,6 +1277,33 @@ class GPUModelRunner(ModelRunnerBase):
             keep_sampling_mask=self.enable_keep_sampling_mask,
         )
         return token_num, token_num_event
+
+    def _compute_position_ids_and_slot_mapping(self) -> None:
+        """Compute position_ids and slot_mapping for KV cache addressing.
+        This is a general computation based on sequence length info and block tables,
+        applicable to all models that need per-token KV cache physical slot addresses.
+        Results are stored in self.forward_meta.
+        """
+        # NOTE(zhushengguang): Only support MLAAttentionBackend and DSAAttentionBackend currently.
+        if not isinstance(self.attn_backends[0], (MLAAttentionBackend, DSAAttentionBackend)):
+            return
+        current_total_tokens = self.forward_meta.ids_remove_padding.shape[0]
+        position_ids = self.share_inputs["position_ids_buffer"][:current_total_tokens]
+        get_position_ids_and_mask_encoder_batch(
+            self.forward_meta.seq_lens_encoder,
+            self.forward_meta.seq_lens_decoder,
+            self.forward_meta.seq_lens_this_time,
+            position_ids,
+        )
+        block_size = self.cache_config.block_size
+        block_idx = position_ids // block_size  # [num_tokens]
+        assert self.forward_meta.batch_id_per_token.shape == block_idx.shape
+        block_ids = self.forward_meta.block_tables[self.forward_meta.batch_id_per_token, block_idx]  # [num_tokens]
+        block_offset = position_ids % block_size  # [num_tokens]
+        slot_mapping = self.share_inputs["slot_mapping_buffer"][:current_total_tokens]
+        paddle.assign((block_ids * block_size + block_offset).cast(paddle.int64), slot_mapping)
+        self.forward_meta.position_ids = position_ids
+        self.forward_meta.slot_mapping = slot_mapping
 
     def _process_reorder(self) -> None:
         if self.attn_backends and getattr(self.attn_backends[0], "enable_ids_reorder", False):
@@ -1731,6 +1765,7 @@ class GPUModelRunner(ModelRunnerBase):
                 self.increment_value,
                 accept_all_drafts,
                 reject_all_drafts,
+                real_bsz=batch_size,
             )
             if self.parallel_config.tensor_parallel_size > 1:
                 paddle.distributed.broadcast(
@@ -1858,6 +1893,8 @@ class GPUModelRunner(ModelRunnerBase):
             # 2. Padding inputs for cuda graph
             self.forward_meta.step_use_cudagraph = in_capturing and self.forward_meta.step_use_cudagraph
             self.padding_cudagraph_inputs()
+            # Compute position_ids and slot_mapping
+            self._compute_position_ids_and_slot_mapping()
 
             model_inputs = {}
             model_inputs["ids_remove_padding"] = self.share_inputs["ids_remove_padding"]
@@ -2195,6 +2232,8 @@ class GPUModelRunner(ModelRunnerBase):
 
         # Padding inputs for cuda graph
         self.padding_cudagraph_inputs()
+        # Compute position_ids and slot_mapping
+        self._compute_position_ids_and_slot_mapping()
 
         model_inputs = {}
         model_inputs["ids_remove_padding"] = self.share_inputs["ids_remove_padding"]
@@ -2360,6 +2399,7 @@ class GPUModelRunner(ModelRunnerBase):
                     self.share_inputs,
                     real_output_token_num,
                     self.increment_value,
+                    real_bsz=real_bsz,
                 )
                 if self.parallel_config.tensor_parallel_size > 1:
                     paddle.distributed.broadcast(
@@ -2512,7 +2552,7 @@ class GPUModelRunner(ModelRunnerBase):
         sampler_output,
     ):
         if self.speculative_decoding:
-            save_output_specualate(
+            save_output_speculate(
                 sampler_output=sampler_output,
                 model_output=model_output_data,
                 share_inputs=self.share_inputs,
