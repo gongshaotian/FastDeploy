@@ -217,6 +217,7 @@ class RoutedExpertsCapturer:
         num_tokens = pending["num_tokens"]
         data = self.cpu_routing_buf[:num_tokens].numpy()
         slot_np = self.cpu_slot_mapping_buf[:num_tokens].numpy()
+
         self.routing_host_view.scatter(slot_np, data)
 
     def get_gpu_routing_buffer(self) -> paddle.Tensor:
