@@ -188,11 +188,11 @@ class RoutedExpertsCapturer:
         """
         if num_tokens > 0:
             # D2D: GPU → staging
-            self.routing_staging_buf[:num_tokens].copy_(self.gpu_routing_buffer[:num_tokens], False)
-            self.slot_mapping_staging_buf[:num_tokens].copy_(slot_mapping_gpu[:num_tokens], False)
+            self.routing_staging_buf.copy_(self.gpu_routing_buffer, False)
+            self.slot_mapping_staging_buf.copy_(slot_mapping_gpu, False)
             # async D2H: staging → CPU pinned
-            self.cpu_routing_buf[:num_tokens].copy_(self.routing_staging_buf[:num_tokens], False)
-            self.cpu_slot_mapping_buf[:num_tokens].copy_(self.slot_mapping_staging_buf[:num_tokens], False)
+            self.cpu_routing_buf.copy_(self.routing_staging_buf, False)
+            self.cpu_slot_mapping_buf.copy_(self.slot_mapping_staging_buf, False)
             self._pending_save = {"num_tokens": num_tokens}
         else:
             self._pending_save = None

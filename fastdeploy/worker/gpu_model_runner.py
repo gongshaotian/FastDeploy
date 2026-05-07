@@ -84,7 +84,7 @@ else:
         speculate_schedule_cache,
         set_data_ipc,
         unset_data_ipc,
-        get_position_ids_and_mask_encoder_batch,
+        get_position_ids,
     )
 
 import zmq
@@ -1297,7 +1297,7 @@ class GPUModelRunner(ModelRunnerBase):
             return
         current_total_tokens = self.forward_meta.ids_remove_padding.shape[0]
         position_ids = self.share_inputs["position_ids_buffer"][:current_total_tokens]
-        get_position_ids_and_mask_encoder_batch(
+        get_position_ids(
             self.forward_meta.seq_lens_encoder,
             self.forward_meta.seq_lens_decoder,
             self.forward_meta.seq_lens_this_time,

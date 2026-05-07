@@ -17,10 +17,10 @@ import unittest
 import numpy as np
 import paddle
 
-from fastdeploy.model_executor.ops.gpu import get_position_ids_and_mask_encoder_batch
+from fastdeploy.model_executor.ops.gpu import get_position_ids
 
 
-class TestGetPositionIdsAndMaskEncoderBatch(unittest.TestCase):
+class TestGetPositionIds(unittest.TestCase):
     def setUp(self):
         np.random.seed(42)
         paddle.set_device("gpu")
@@ -35,7 +35,7 @@ class TestGetPositionIdsAndMaskEncoderBatch(unittest.TestCase):
         position_ids = paddle.zeros([total_len], dtype="int32")
 
         # Call the custom operator
-        get_position_ids_and_mask_encoder_batch(seq_lens_encoder, seq_lens_decoder, seq_lens_this_time, position_ids)
+        get_position_ids(seq_lens_encoder, seq_lens_decoder, seq_lens_this_time, position_ids)
 
         expected_position_ids = np.array([0, 1, 2, 1, 0, 1, 2, 3], dtype=np.int32)
 
@@ -53,7 +53,7 @@ class TestGetPositionIdsAndMaskEncoderBatch(unittest.TestCase):
 
         position_ids = paddle.zeros([2], dtype="int32")
 
-        get_position_ids_and_mask_encoder_batch(seq_lens_encoder, seq_lens_decoder, seq_lens_this_time, position_ids)
+        get_position_ids(seq_lens_encoder, seq_lens_decoder, seq_lens_this_time, position_ids)
 
         expected_position_ids = np.array([0, 1], dtype=np.int32)
 
