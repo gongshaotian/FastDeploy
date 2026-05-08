@@ -190,7 +190,7 @@ class RoutedExpertsCapturer:
             # D2D: GPU → staging
             self.routing_staging_buf.copy_(self.gpu_routing_buffer, False)
             self.slot_mapping_staging_buf.copy_(slot_mapping_gpu, False)
-            # async D2H: staging → CPU pinned
+            # Async D2H: staging → CPU pinned
             self.cpu_routing_buf.copy_(self.routing_staging_buf, False)
             self.cpu_slot_mapping_buf.copy_(self.slot_mapping_staging_buf, False)
             self._pending_save = {"num_tokens": num_tokens}
@@ -215,8 +215,9 @@ class RoutedExpertsCapturer:
                 return
 
         num_tokens = pending["num_tokens"]
-        data = self.cpu_routing_buf[:num_tokens].numpy()
-        slot_np = self.cpu_slot_mapping_buf[:num_tokens].numpy()
+        # NOTE(gongshaotian): Slice pinned memory tensor maybe cause problem.
+        data = self.cpu_routing_buf.cpu()[:num_tokens].numpy()
+        slot_np = self.cpu_slot_mapping_buf.cpu()[:num_tokens].numpy()
 
         self.routing_host_view.scatter(slot_np, data)
 
