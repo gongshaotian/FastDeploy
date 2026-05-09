@@ -31,7 +31,7 @@ from fastdeploy.model_executor.ops.triton_ops.triton_utils import (
 @enable_compat_on_triton_kernel
 @triton.jit
 def _save_routing_kernel_v2(
-    GPU_ROUTING_BUFFER_PTR,
+    device_routing_buffer_PTR,
     TOPK_IDS_PTR,
     LAYER_IDX,
     TOKEN_NUM,
@@ -55,13 +55,16 @@ def _save_routing_kernel_v2(
     STRIDE_TOKEN = NUM_MOE_LAYERS * TOP_K
     STRIDE_LAYER = TOP_K
     output_ptrs = (
-        GPU_ROUTING_BUFFER_PTR + token_offsets[:, None] * STRIDE_TOKEN + LAYER_IDX * STRIDE_LAYER + k_offsets[None, :]
+        device_routing_buffer_PTR
+        + token_offsets[:, None] * STRIDE_TOKEN
+        + LAYER_IDX * STRIDE_LAYER
+        + k_offsets[None, :]
     )
     tl.store(output_ptrs, topk_vals, mask=load_mask)
 
 
 def save_routing_to_buffer_v2(
-    gpu_routing_buffer: paddle.Tensor,
+    device_routing_buffer: paddle.Tensor,
     topk_ids: paddle.Tensor,
     layer_idx: int,
     tp_size: int,
@@ -81,19 +84,21 @@ def save_routing_to_buffer_v2(
         topk_ids = topk_ids_all[:total_token_num, :]
 
     token_num, top_k = topk_ids.shape
-    buf_max_tokens, num_moe_layers, buf_top_k = gpu_routing_buffer.shape
+    buf_max_tokens, num_moe_layers, buf_top_k = device_routing_buffer.shape
 
     assert (
         token_num <= buf_max_tokens
-    ), f"[R3] token_num={token_num} exceeds gpu_routing_buffer capacity={buf_max_tokens}"
-    assert top_k == buf_top_k, f"[R3] top_k mismatch: topk_ids.top_k={top_k} vs gpu_routing_buffer.top_k={buf_top_k}"
+    ), f"[R3] token_num={token_num} exceeds device_routing_buffer capacity={buf_max_tokens}"
+    assert (
+        top_k == buf_top_k
+    ), f"[R3] top_k mismatch: topk_ids.top_k={top_k} vs device_routing_buffer.top_k={buf_top_k}"
     assert 0 <= layer_idx < num_moe_layers, f"[R3] layer_idx={layer_idx} out of range [0, {num_moe_layers})"
 
     BLOCK_SIZE_M = 128
     BLOCK_SIZE_K = triton.next_power_of_2(top_k)
     grid = (triton.cdiv(token_num, BLOCK_SIZE_M),)
     _save_routing_kernel_v2[grid](
-        gpu_routing_buffer,
+        device_routing_buffer,
         topk_ids,
         LAYER_IDX=layer_idx,
         TOKEN_NUM=token_num,
@@ -134,7 +139,7 @@ class RoutedExpertsCapturer:
         max_num_batched_tokens = self.fd_config.get_max_chunk_tokens()
         shape = [max_num_batched_tokens, self.num_moe_layers, self.moe_top_k]
 
-        self.gpu_routing_buffer = paddle.full(shape=shape, fill_value=-1, dtype=dtype)
+        self.device_routing_buffer = paddle.full(shape=shape, fill_value=-1, dtype=dtype)
         self.routing_staging_buf = paddle.full(shape=shape, fill_value=-1, dtype=dtype)
         self.slot_mapping_staging_buf = paddle.zeros([max_num_batched_tokens], dtype=paddle.int64)
 
@@ -151,9 +156,9 @@ class RoutedExpertsCapturer:
         self._routing_host_view_shape = (max_num_kv_tokens, self.num_moe_layers, self.moe_top_k)
         self._routing_host_view_dtype = dtype
 
-        gpu_buffer_bytes = int(np.prod(self.gpu_routing_buffer.shape)) * np.dtype(dtype).itemsize
+        gpu_buffer_bytes = int(np.prod(self.device_routing_buffer.shape)) * np.dtype(dtype).itemsize
         logger.info(
-            f"[R3] GPU transient routing buffer: {self.gpu_routing_buffer.shape} "
+            f"[R3] GPU transient routing buffer: {self.device_routing_buffer.shape} "
             f"({gpu_buffer_bytes / 1024:.1f} KB)"
         )
 
@@ -181,14 +186,14 @@ class RoutedExpertsCapturer:
         Must be called before post_process_event.record().
         All ops are enqueued on the current CUDA stream; CPU returns immediately.
 
-        1. D2D (non-blocking): gpu_routing_buffer → routing_staging_buf
+        1. D2D (non-blocking): device_routing_buffer → routing_staging_buf
         2. D2D (non-blocking): slot_mapping_gpu → slot_mapping_staging_buf
         3. async D2H: routing_staging_buf → cpu_routing_buf
         4. async D2H: slot_mapping_staging_buf → cpu_slot_mapping_buf
         """
         if num_tokens > 0:
             # D2D: GPU → staging
-            self.routing_staging_buf.copy_(self.gpu_routing_buffer, False)
+            self.routing_staging_buf.copy_(self.device_routing_buffer, False)
             self.slot_mapping_staging_buf.copy_(slot_mapping_gpu, False)
             # Async D2H: staging → CPU pinned
             self.cpu_routing_buf.copy_(self.routing_staging_buf, False)
@@ -221,12 +226,12 @@ class RoutedExpertsCapturer:
 
         self.routing_host_view.scatter(slot_np, data)
 
-    def get_gpu_routing_buffer(self) -> paddle.Tensor:
-        return self.gpu_routing_buffer
+    def get_device_routing_buffer(self) -> paddle.Tensor:
+        return self.device_routing_buffer
 
     def clear(self):
         """Clear GPU buffer and pending save state. Used during RL round cleanup."""
-        self.gpu_routing_buffer.fill_(-1)
+        self.device_routing_buffer.fill_(-1)
         self._pending_save = None
 
 
