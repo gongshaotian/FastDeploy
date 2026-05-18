@@ -701,7 +701,6 @@ class Wfp8Afp8MoEMethod(QuantMethodBase):
         if token_num == 0:
             return paddle.zeros([token_num, layer.hidden_size], dtype=x.dtype)
         gate_out = gate(x)
-        gate_out = gate_out.cast("float32")
         top_k = layer.top_k
         num_local_experts = layer.num_local_experts
         moe_intermediate_size = layer.moe_intermediate_size
@@ -709,6 +708,11 @@ class Wfp8Afp8MoEMethod(QuantMethodBase):
         E, N1, _ = getattr(layer, self.added_weight_attrs[0]).shape
 
         if layer.topk_method == "noaux_tc":
+            use_fused = (
+                layer.fd_config.scheduler_config.enable_moe_scores_elementwise_fuse and current_platform.is_cuda()
+            )
+            if not use_fused:
+                gate_out = gate_out.cast("float32")
             gate_out, topk_weights, topk_ids = get_moe_scores(
                 gate_out,
                 layer.n_group,
@@ -717,8 +721,10 @@ class Wfp8Afp8MoEMethod(QuantMethodBase):
                 layer.routed_scaling_factor,
                 layer.gate_correction_bias,
                 getattr(layer, "renormalize", True),
+                use_fused_cast=use_fused,
             )
         else:
+            gate_out = gate_out.cast("float32")
             topk_ids, topk_weights = fastdeploy.model_executor.ops.gpu.moe_topk_select(
                 gate_out,
                 layer.gate_correction_bias,
@@ -783,8 +789,8 @@ class Wfp8Afp8MoEMethod(QuantMethodBase):
             stride_am=x_q.strides[0],
             stride_ak=x_q.strides[1],
             stride_be=layer.up_gate_proj_weight.strides[0],
-            stride_bk=layer.up_gate_proj_weight.strides[1],
-            stride_bn=layer.up_gate_proj_weight.strides[2],
+            stride_bk=layer.up_gate_proj_weight.strides[2],
+            stride_bn=layer.up_gate_proj_weight.strides[1],
             stride_cm=up_gate_proj_out.strides[0],
             stride_cn=up_gate_proj_out.strides[1],
             #
@@ -1952,10 +1958,11 @@ class TritonMoEMethod(UnquantizedFusedMoEMethod):
         gate_out = gate(x)
 
         if layer.topk_method == "noaux_tc":
-            use_fused = not fastdeploy.envs.FD_ENABLE_RL and current_platform.is_cuda()
+            use_fused = (
+                layer.fd_config.scheduler_config.enable_moe_scores_elementwise_fuse and current_platform.is_cuda()
+            )
             if not use_fused:
                 gate_out = gate_out.cast("float32")
-
             _, topk_weights, topk_ids = get_moe_scores(
                 gate_out,
                 layer.n_group,
