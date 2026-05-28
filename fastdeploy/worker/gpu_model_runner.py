@@ -71,11 +71,13 @@ if current_platform.is_iluvatar():
     )
 
     share_external_data = None
+    get_position_ids_and_slot_mapping = None
 elif current_platform.is_dcu():
     from fastdeploy.model_executor.ops.gpu import set_value_by_flags_and_idx
 
     recover_decode_task = None
     share_external_data = None
+    get_position_ids_and_slot_mapping = None
 else:
     from fastdeploy.model_executor.ops.gpu import (
         recover_decode_task,
@@ -85,6 +87,7 @@ else:
         set_data_ipc,
         unset_data_ipc,
         get_position_ids,
+        get_position_ids_and_slot_mapping,
     )
 
 import zmq
@@ -1315,37 +1318,42 @@ class GPUModelRunner(ModelRunnerBase):
         )
         return token_num, token_num_event
 
-    def _compute_position_ids_and_slot_mapping(self) -> None:
+    def _compute_position_ids_and_slot_mapping(self, total_token_num) -> None:
         """Compute position_ids and slot_mapping for KV cache addressing.
         This is a general computation based on sequence length info and block tables,
         applicable to all models that need per-token KV cache physical slot addresses.
         Results are stored in self.forward_meta.
         """
-        # NOTE(zhushengguang): Only support MLAAttentionBackend and DSAAttentionBackend currently.
-        # Also needed when R3 (Routing Replay) is enabled for slot_mapping_buffer computation.
-        needs_slot_mapping = isinstance(self.attn_backends[0], (MLAAttentionBackend, DSAAttentionBackend))
-        needs_slot_mapping = (self.routing_replay_manager is not None) or needs_slot_mapping
-        if not needs_slot_mapping:
+        if self.routing_replay_manager is None:
             return
-        current_total_tokens = self.forward_meta.ids_remove_padding.shape[0]
-        position_ids = self.share_inputs["position_ids_buffer"][:current_total_tokens]
-        get_position_ids(
+        # Directly write to existing buffers (no memory allocation or copy needed)
+        position_ids_buffer = self.share_inputs["position_ids_buffer"][:total_token_num]
+        slot_mapping_buffer = self.share_inputs["slot_mapping_buffer"][:total_token_num]
+        get_position_ids_and_slot_mapping(
             self.forward_meta.seq_lens_encoder,
             self.forward_meta.seq_lens_decoder,
             self.forward_meta.seq_lens_this_time,
-            position_ids,
+            self.forward_meta.batch_id_per_token,
+            self.forward_meta.block_tables,
+            position_ids_buffer,
+            slot_mapping_buffer,
+            self.cache_config.block_size,
         )
-        block_size = self.cache_config.block_size
-        block_idx = position_ids // block_size  # [num_tokens]
-        assert (
-            self.forward_meta.batch_id_per_token.shape == block_idx.shape
-        ), f"batch_id_per_token.shape:{self.forward_meta.batch_id_per_token.shape} != block_idx.shape:{block_idx.shape}"
-        block_ids = self.forward_meta.block_tables[self.forward_meta.batch_id_per_token, block_idx]  # [num_tokens]
-        block_offset = position_ids % block_size  # [num_tokens]
-        slot_mapping = self.share_inputs["slot_mapping_buffer"][:current_total_tokens]
-        paddle.assign((block_ids * block_size + block_offset).cast(paddle.int64), slot_mapping)
-        self.forward_meta.position_ids = position_ids
-        self.forward_meta.slot_mapping = slot_mapping
+        # Store views in forward_meta
+        self.forward_meta.position_ids = position_ids_buffer
+        self.forward_meta.slot_mapping = slot_mapping_buffer
+
+        # Debug: print all tokens' position_ids and slot_mapping in R3 debug mode
+        if self.routing_replay_manager is not None and self.routing_replay_manager.debug_mode:
+            logger.info(f"seq_lens_this_time: {self.forward_meta.seq_lens_this_time}")
+            logger.info(f"seq_lens_decoder: {self.forward_meta.seq_lens_decoder}")
+            logger.info(f"seq_lens_encoder: {self.forward_meta.seq_lens_encoder}")
+
+            logger.info(f"[R3 Debug] token mapping: num_tokens={total_token_num}")
+            logger.info(f"  token | position_id | slot ")
+            logger.info("  " + "-" * 30)
+            for i in range(total_token_num):
+                logger.info(f"  {i:4d} | {int(self.forward_meta.position_ids[i]):8d} | {int(self.forward_meta.slot_mapping[i]):7d}")
 
     def _process_reorder(self) -> None:
         if self.attn_backends and getattr(self.attn_backends[0], "enable_ids_reorder", False):
@@ -1933,12 +1941,15 @@ class GPUModelRunner(ModelRunnerBase):
 
         while True:
             # 1. Initialize forward meta and attention meta data
-            self._prepare_inputs(is_dummy_or_profile_run=True)
+            token_num, _ = self._prepare_inputs(is_dummy_or_profile_run=True)
             # 2. Padding inputs for cuda graph
             self.forward_meta.step_use_cudagraph = in_capturing and self.forward_meta.step_use_cudagraph
             self.padding_cudagraph_inputs()
             # Compute position_ids and slot_mapping
-            self._compute_position_ids_and_slot_mapping()
+            
+            self._compute_position_ids_and_slot_mapping(
+                total_token_num=token_num
+            )
 
             model_inputs = {}
             model_inputs["ids_remove_padding"] = self.share_inputs["ids_remove_padding"]
@@ -2318,7 +2329,12 @@ class GPUModelRunner(ModelRunnerBase):
         # ensuring that the token count for the current batch is ready to be computed and reused in the subsequent batch.
         token_num_event.synchronize()
         next_launch_token_num, next_real_bsz = self._predict_next_launch_token_num()
-        real_bsz = (self.share_inputs["seq_lens_this_time_cpu"].numpy() > 0).sum().item()
+        seq_lens_this_time_cpu_numpy = self.share_inputs["seq_lens_this_time_cpu"].numpy()
+        real_bsz = (seq_lens_this_time_cpu_numpy > 0).sum().item()
+        if self.routing_replay_manager is not None:
+            self.routing_replay_manager.token_num_overlap = seq_lens_this_time_cpu_numpy.sum().item()
+        # # # Compute position_ids and slot_mapping
+        # self._compute_position_ids_and_slot_mapping(total_token_num=self.share_inputs["seq_lens_this_time_cpu"].numpy().sum().item())
         if real_bsz > 0 and model_output is not None:
             model_output_data, sampler_output, post_process_event = self._postprocess(
                 model_output, p_done_idxs, model_forward_batch, num_running_requests, real_bsz
@@ -2365,6 +2381,7 @@ class GPUModelRunner(ModelRunnerBase):
         # Prepare inputs of model and sampler.
         current_launch_token_num, token_num_event = self._prepare_inputs(cached_token_num, cached_real_bsz)
         self.current_launch_token_num = current_launch_token_num
+        logger.info(f"current_launch_token_num {current_launch_token_num}")
 
         # NOTE(sunxin):
         # If current_launch_token_num is 0, it means the current worker is in an idle state,
@@ -2384,7 +2401,7 @@ class GPUModelRunner(ModelRunnerBase):
         # Padding inputs for cuda graph
         self.padding_cudagraph_inputs()
         # Compute position_ids and slot_mapping
-        self._compute_position_ids_and_slot_mapping()
+        self._compute_position_ids_and_slot_mapping(total_token_num=current_launch_token_num)
 
         model_inputs = {}
         model_inputs["ids_remove_padding"] = self.share_inputs["ids_remove_padding"]

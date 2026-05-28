@@ -308,7 +308,7 @@ class StoreProcess(Process):
     def close(self):
         """Close the store process"""
         self._closed = True
-        if hasattr(self, "_event_loop_thread"):
+        if hasattr(self, "_event_loop_thread") and self._event_loop_thread is not None:
             self._event_loop_thread.stop()
 
     def pad_routing_indices(self, routing_indices: np.ndarray) -> np.ndarray:

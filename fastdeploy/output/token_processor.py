@@ -613,6 +613,9 @@ class TokenProcessor:
                     if hasattr(task, "output_token_ids")
                     else task.prompt_token_ids_len
                 )
+                seq_len = seq_len - 1 # Ignore eos token
+                last_output_token = task.output_token_ids[-1]
+                llm_logger.info(f"output_token_ids last token {last_output_token}")
                 if store_type == "response":
                     routing_data = self._gather_routing_for_finished_request(task, seq_len)
                     if routing_data is not None:

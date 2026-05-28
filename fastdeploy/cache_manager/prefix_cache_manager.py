@@ -1558,19 +1558,27 @@ class PrefixCacheManager:
                         cpu_free_count = total_gpu_free_count
                         if cpu_free_count < need_block_num:
                             cpu_free_count = need_block_num
-                        self.cpu_free_future = self.free_cpu_executor_pool.submit(
-                            self.free_cpu_block_ids, cpu_free_count
+                        try:
+                            self.cpu_free_future = self.free_cpu_executor_pool.submit(
+                                self.free_cpu_block_ids, cpu_free_count
+                            )
+                        except RuntimeError:
+                            # Executor pool has been shutdown, ignore during shutdown
+                            pass
+                    try:
+                        self.gpu_free_task_future = self.free_gpu_executor_pool.submit(
+                            self._evict_cache_async,
+                            self.cpu_free_future,
+                            total_gpu_free_count,
+                            hash_value_gpu_block_ids_map,
+                            hash_value_block_ids_map,
+                            hash_value_swap_node_ids_map,
+                            hash_value_input_ids_map,
+                            hash_value_depth_map,
                         )
-                    self.gpu_free_task_future = self.free_gpu_executor_pool.submit(
-                        self._evict_cache_async,
-                        self.cpu_free_future,
-                        total_gpu_free_count,
-                        hash_value_gpu_block_ids_map,
-                        hash_value_block_ids_map,
-                        hash_value_swap_node_ids_map,
-                        hash_value_input_ids_map,
-                        hash_value_depth_map,
-                    )
+                    except RuntimeError:
+                        # Executor pool has been shutdown, ignore during shutdown
+                        self.gpu_free_task_future = None
                 else:
                     self.gpu_free_task_future = None
             except Exception as e:

@@ -334,6 +334,7 @@ elif paddle.is_compiled_with_cuda():
         "gpu_ops/sample_kernels/top_k_renorm_probs.cu",
         "gpu_ops/sample_kernels/min_p_sampling_from_probs.cu",
         "gpu_ops/get_position_ids.cu",
+        "gpu_ops/get_position_ids_and_slot_mapping.cu",
         "gpu_ops/fused_rotary_position_encoding.cu",
         "gpu_ops/noaux_tc.cu",
         "gpu_ops/noaux_tc_redundant.cu",
