@@ -245,7 +245,7 @@ class ResourceManagerV1(ResourceManager):
         block_num = (
             request.num_computed_tokens + num_new_tokens + self.config.cache_config.block_size - 1
         ) // self.config.cache_config.block_size - len(request.block_tables)
-
+        block_num = max(block_num, 0)
         if self.config.speculative_config.method is not None:
             block_num = min(block_num + 1, self.config.cache_config.max_block_num_per_seq)
         else:
@@ -869,6 +869,7 @@ class ResourceManagerV1(ResourceManager):
             # First, schedule the RUNNING requests.
             req_index = 0
             num_decoding_req_nums = 0
+
             while req_index < len(self.running) and token_budget > 0:
                 request = self.running[req_index]
                 need_block_num = self.need_block_num_signal.value[request.idx]
@@ -1001,7 +1002,13 @@ class ResourceManagerV1(ResourceManager):
                         req_index += 1
                         continue
                     num_new_block = self.get_new_block_nums(request, num_new_tokens)
-                    can_schedule_block_num_threshold = self._get_can_schedule_prefill_threshold_block(num_new_block)
+                    if self.config.scheduler_config.splitwise_role == "prefill":
+                        # for prefill instance, do not set threshold for running requests
+                        can_schedule_block_num_threshold = 0
+                    else:
+                        can_schedule_block_num_threshold = self._get_can_schedule_prefill_threshold_block(
+                            num_new_block
+                        )
                     # Allocate blocks to prefill
                     if self.cache_manager.can_allocate_gpu_blocks(can_schedule_block_num_threshold):
                         request.block_tables.extend(
@@ -1063,9 +1070,12 @@ class ResourceManagerV1(ResourceManager):
                                 self.cache_manager.num_cpu_blocks > 0
                                 or self.config.cache_config.kvcache_storage_backend
                             ):
-                                if not self.cache_manager.can_allocate_gpu_blocks(
+                                can_schedule_block_num_threshold = self._get_can_schedule_prefill_threshold_block(
                                     (request.need_prefill_tokens + self.config.cache_config.block_size - 1)
                                     // self.config.cache_config.block_size
+                                )
+                                if not self.cache_manager.can_allocate_gpu_blocks(
+                                    can_schedule_block_num_threshold
                                 ):  # to prevent block allocation for matching in hierarchical cache and cause dead lock
                                     break
                             success = self.get_prefix_cached_blocks(request)
@@ -1124,6 +1134,7 @@ class ResourceManagerV1(ResourceManager):
                                 self.req_dict[request.request_id] = allocated_position
                                 llm_logger.debug(f"req_id:{request.request_id} allocate pos end")
                         else:
+                            # Warning: _free_blocks before update_cache_blocks may cause storage blocks leak
                             if self.config.cache_config.enable_prefix_caching:
                                 self._free_blocks(request)
                             break
@@ -1139,9 +1150,12 @@ class ResourceManagerV1(ResourceManager):
                                 self.cache_manager.num_cpu_blocks > 0
                                 or self.config.cache_config.kvcache_storage_backend
                             ):
-                                if not self.cache_manager.can_allocate_gpu_blocks(
+                                can_schedule_block_num_threshold = self._get_can_schedule_prefill_threshold_block(
                                     (request.need_prefill_tokens + self.config.cache_config.block_size - 1)
                                     // self.config.cache_config.block_size
+                                )
+                                if not self.cache_manager.can_allocate_gpu_blocks(
+                                    can_schedule_block_num_threshold
                                 ):  # to prevent block allocation for matching in hierarchical cache and cause dead lock
                                     break
                             success = self.get_prefix_cached_blocks(request)
@@ -1186,6 +1200,7 @@ class ResourceManagerV1(ResourceManager):
                                 )
                             request.status = RequestStatus.RUNNING_PREFILL
                         else:
+                            # Warning: _free_blocks before update_cache_blocks may cause storage blocks leak
                             if self.config.cache_config.enable_prefix_caching:
                                 self._free_blocks(request)
                             break
@@ -1673,7 +1688,12 @@ class ResourceManagerV1(ResourceManager):
             # Do not block the main thread here
             # Write cache to storage if kvcache_storage_backend is enabled
             for req in need_postprocess_reqs:
-                if self.config.scheduler_config.splitwise_role == "decode":
+                if envs.FD_PD_TRANSFER_VIA_STORAGE:
+                    # Storage pool mode: P already writes cache in token_processor before notifying D,
+                    # only D needs to write here (including output tokens generated during decode)
+                    if self.config.scheduler_config.splitwise_role == "decode":
+                        self.cache_manager.write_all_cache_to_storage(req)
+                elif self.config.scheduler_config.splitwise_role == "decode":
                     # D instance uses simplified write method (does not rely on Radix Tree)
                     self.cache_manager.write_cache_to_storage_decode(req)
                 else:
@@ -1759,15 +1779,26 @@ class ResourceManagerV1(ResourceManager):
         prefill_reqs = [r for r in scheduled_reqs if isinstance(r, Request) and r.task_type == RequestType.PREFILL]
         has_decode = any(getattr(r, "task_type", None) == RequestType.DECODE for r in scheduled_reqs)
 
-        self.scheduler_metrics_logger.log_prefill_batch(
-            prefill_reqs=prefill_reqs,
-            running_cnt=running_cnt,
-            queue_cnt=queue_cnt,
-            tokens_used=tokens_used,
-            token_usage=token_usage,
-            free_blocks=free_blocks,
-            evictable_blocks=evictable_blocks,
-        )
+        if self.config.scheduler_config.splitwise_role == "decode":
+            self.scheduler_metrics_logger.log_decode_bootstrap_batch(
+                prefill_reqs=prefill_reqs,
+                running_cnt=running_cnt,
+                queue_cnt=queue_cnt,
+                tokens_used=tokens_used,
+                token_usage=token_usage,
+                free_blocks=free_blocks,
+                evictable_blocks=evictable_blocks,
+            )
+        else:
+            self.scheduler_metrics_logger.log_prefill_batch(
+                prefill_reqs=prefill_reqs,
+                running_cnt=running_cnt,
+                queue_cnt=queue_cnt,
+                tokens_used=tokens_used,
+                token_usage=token_usage,
+                free_blocks=free_blocks,
+                evictable_blocks=evictable_blocks,
+            )
         if has_decode:
             has_prefill = len(prefill_reqs) > 0
             graph_opt_cfg = self.config.graph_opt_config

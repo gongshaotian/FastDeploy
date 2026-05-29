@@ -719,7 +719,8 @@ def test_process_batch_output_logprob_records_topk_and_caching():
     task.trace_carrier = None
     rm.tasks_list[0] = task
     rm.req_dict[task.request_id] = task
-    processor.output_tokens[1, 0] = 1
+    # mtext[1] packs bsz (low 16 bits) | actual_topk (high 16 bits)
+    processor.output_tokens[1, 0] = 1 | ((K + 1) << 16)
     token_block = np.arange(K + 1, dtype=np.int64) + 3
     processor.output_tokens[2 : 2 + K + 1] = paddle.to_tensor(token_block.reshape([-1, 1]))
     processor.output_scores[: K + 1] = paddle.ones([K + 1, 1], dtype="float32")
@@ -748,7 +749,7 @@ def test_process_batch_output_speculative_logprob_handles_draft_batch():
     )
     processor._batch_result_buffer = [target]
     processor.cached_generated_tokens = mock.Mock()
-    processor.output_tokens[1, 0] = 4
+    processor.output_tokens[1, 0] = 4 | ((K + 1) << 8)
     processor.output_tokens[2, 0] = 1
     processor.output_tokens[3, 0] = 1
 
@@ -842,7 +843,8 @@ def test_process_batch_output_prefill_chunk_and_adapter_skip():
     task.get = lambda key, default=None: getattr(task, key, default)
     rm.tasks_list[0] = task
     rm.req_dict[task.request_id] = task
-    processor.output_tokens[1, 0] = 1
+    # mtext[1] packs bsz (low 16 bits) | actual_topk (high 16 bits)
+    processor.output_tokens[1, 0] = 1 | ((K + 1) << 16)
     processor.output_tokens[2 : 2 + K + 1] = paddle.to_tensor(np.ones([K + 1, 1], dtype=np.int64))
     processor.output_scores[: K + 1] = paddle.ones([K + 1, 1], dtype="float32")
     processor.output_ranks[0] = paddle.to_tensor(0, dtype="int64")
@@ -924,7 +926,7 @@ def test_process_batch_output_speculative_logprob_targets_topk_scores():
     task.trace_carrier = None
     rm.tasks_list[0] = task
     rm.req_dict[task.request_id] = task
-    processor.output_tokens[1, 0] = 3
+    processor.output_tokens[1, 0] = 3 | ((K + 1) << 8)
     processor.output_tokens[2, 0] = 1
     processor.output_tokens[3, 0] = 2
     token_block = np.arange(MAX_DRAFT_TOKENS * (K + 1), dtype=np.int64).reshape([-1, 1]) + 3

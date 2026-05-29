@@ -73,6 +73,8 @@ def allocate_launch_related_buffer(
     num_heads,
     kv_num_heads,
     block_size,
+    head_dim=128,
+    dtype="bfloat16",
 ):
     # Initialize AttentionBackend buffers
     assert num_heads % kv_num_heads == 0
@@ -107,6 +109,28 @@ def allocate_launch_related_buffer(
     res["kv_batch_ids"] = paddle.full([kv_max_tile_size], 0, dtype="int32")
     res["kv_tile_ids_per_batch"] = paddle.full([kv_max_tile_size], 0, dtype="int32")
     res["kv_num_blocks_x_cpu"] = paddle.full([1], 0, dtype="int32").cpu()
+
+    # Decode attention split ops buffers
+    if envs.USE_DECODE_UNIFIED_ATTENTION:
+        min_chunk_size = 512
+        max_num_chunk = (max_model_len + min_chunk_size - 1) // min_chunk_size
+        q_tile_size = 16 if decoder_step_token_num * group_size <= 16 else 32
+        q_tile_num = (decoder_step_token_num * group_size + q_tile_size - 1) // q_tile_size
+        res["decode_block_indices"] = paddle.full(
+            [max_batch_size * kv_num_heads * max_num_chunk * q_tile_num, 4], 0, dtype="int32"
+        )
+        res["decode_num_blocks"] = paddle.full([1], 0, dtype="int32")
+        res["decode_chunk_size"] = paddle.full([1], 0, dtype="int32")
+        res["decode_tmp_workspace"] = paddle.full(
+            [max_batch_size * decoder_step_token_num, max_num_chunk, num_heads * head_dim], 0, dtype=dtype
+        )
+        res["decode_tmp_m"] = paddle.full(
+            [max_batch_size * decoder_step_token_num, max_num_chunk, num_heads], 0, dtype="float32"
+        )
+        res["decode_tmp_d"] = paddle.full(
+            [max_batch_size * decoder_step_token_num, max_num_chunk, num_heads], 0, dtype="float32"
+        )
+
     return res
 
 
@@ -210,7 +234,11 @@ class AppendAttentionBackend(AttentionBackend):
         # pd_disaggregation
         metadata.kv_signal_data_list = [None] * self.num_layers
         if self.pd_disaggregation_mode == "per_chunk":
-            if not self.keep_pd_step_flag and not forward_meta.is_dummy_or_profile_run:
+            if (
+                not self.keep_pd_step_flag
+                and not forward_meta.is_dummy_or_profile_run
+                and not envs.FD_PD_TRANSFER_VIA_STORAGE
+            ):
                 init_kv_signal_per_query(
                     forward_meta.seq_lens_encoder,
                     forward_meta.seq_lens_this_time,
@@ -218,7 +246,7 @@ class AppendAttentionBackend(AttentionBackend):
                     self.rank,
                     self.num_layers + self.num_layers_draft_model,
                 )
-        elif self.pd_disaggregation_mode == "per_query":
+        elif self.pd_disaggregation_mode == "per_query" and not envs.FD_PD_TRANSFER_VIA_STORAGE:
             metadata.kv_signal_metadata = open_shm_and_get_meta_signal(
                 self.rank, int(self.device_id), self.keep_pd_step_flag
             )
@@ -306,7 +334,7 @@ class AppendAttentionBackend(AttentionBackend):
                 # 64 is gpt-oss
                 assert forward_meta.rotary_embs.shape[4] in [128, 32, 64]
 
-        if self.pd_disaggregation_mode == "per_query":
+        if self.pd_disaggregation_mode == "per_query" and not envs.FD_PD_TRANSFER_VIA_STORAGE:
             metadata.kv_signal_data_list[layer.layer_id] = init_signal_layerwise(
                 metadata.kv_signal_metadata,
                 layer.layer_id + self.start_layer_index,
