@@ -40,7 +40,7 @@ __global__ void GetPositionIdsAndSlotMappingKernel(
   int token_num_this_batch = seq_lens_this_time[current_bid];
   if (token_num_this_batch == 0) return;
 
-  // Write position ids and slot mapping for current batch
+    // Write position ids and slot mapping for current batch
 #pragma unroll
   for (int i = 0; i < token_num_this_batch; i++) {
     int pos_id = token_offset + i;

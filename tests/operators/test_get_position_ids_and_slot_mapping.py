@@ -52,11 +52,10 @@ class TestGetPositionIdsAndSlotMapping(unittest.TestCase):
         position_ids_int32 = paddle.zeros([sum_token_num], dtype="int32")
         get_position_ids(seq_lens_encoder, seq_lens_decoder, seq_lens_this_time, position_ids_int32)
 
-        block_size_tensor = paddle.full([1], block_size, dtype="int64")
-        block_idx = position_ids_int32.cast(paddle.int64) // block_size_tensor[0]
+        block_idx = position_ids_int32 // block_size
         block_ids = block_tables[batch_id_per_token[:sum_token_num], block_idx]
-        block_offset = position_ids_int32.cast(paddle.int64) % block_size_tensor[0]
-        slot_mapping = (block_ids * block_size_tensor[0] + block_offset).cast(paddle.int64)
+        block_offset = position_ids_int32 % block_size
+        slot_mapping = (block_ids * block_size + block_offset).cast(paddle.int64)
 
         # Cast position_ids to int64 for comparison with new kernel
         position_ids = position_ids_int32.cast(paddle.int64)
@@ -105,8 +104,8 @@ class TestGetPositionIdsAndSlotMapping(unittest.TestCase):
 
     def _generate_block_tables(self, bsz, max_num_blocks):
         """Generate block_tables with sequential block ids for reproducibility."""
-        block_tables = np.arange(bsz * max_num_blocks, dtype=np.int64).reshape(bsz, max_num_blocks)
-        return paddle.to_tensor(block_tables, dtype="int64", place=paddle.CUDAPlace(0))
+        block_tables = np.arange(bsz * max_num_blocks, dtype=np.int32).reshape(bsz, max_num_blocks)
+        return paddle.to_tensor(block_tables, dtype="int32", place=paddle.CUDAPlace(0))
 
     def test_single_batch_decode(self):
         """Test single batch in decode stage."""
