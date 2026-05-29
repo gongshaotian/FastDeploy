@@ -337,9 +337,10 @@ def post_process_normal(
     # Routing replay
     if routing_replay_manager is not None:
         slot_mapping_gpu = share_inputs["slot_mapping_buffer"]
+        position_ids_gpu = share_inputs.get("position_ids_buffer")
         num_tokens = int(share_inputs["ids_remove_padding"].shape[0])
         if routing_replay_manager.tp_rank == 0:
-            routing_replay_manager.prepare_pending_save(num_tokens, slot_mapping_gpu)
+            routing_replay_manager.prepare_pending_save(num_tokens, slot_mapping_gpu, position_ids_gpu)
 
     # 2. Update the input buffer of the model
     with paddle.framework._no_check_dy2st_diff():
@@ -506,9 +507,10 @@ def post_process_speculate(
     # Routing replay
     if routing_replay_manager is not None:
         slot_mapping_gpu = share_inputs["slot_mapping_buffer"]
+        position_ids_gpu = share_inputs.get("position_ids_buffer")
         num_tokens = int(share_inputs["ids_remove_padding"].shape[0])
         if routing_replay_manager.tp_rank == 0:
-            routing_replay_manager.prepare_pending_save(num_tokens, slot_mapping_gpu)
+            routing_replay_manager.prepare_pending_save(num_tokens, slot_mapping_gpu, position_ids_gpu)
 
     # Unified state update: merges speculate_update + speculate_set_value_by_flags_and_idx
     # into a single kernel launch. Handles EOS detection, max_dec_len truncation, step_idx

@@ -544,6 +544,14 @@ void GetPositionIds(const paddle::Tensor& seq_lens_encoder,
                     const paddle::Tensor& seq_lens_decoder,
                     const paddle::Tensor& seq_lens_this_time,
                     const paddle::Tensor& position_ids);
+void GetPositionIdsAndSlotMapping(const paddle::Tensor& seq_lens_encoder,
+                                  const paddle::Tensor& seq_lens_decoder,
+                                  const paddle::Tensor& seq_lens_this_time,
+                                  const paddle::Tensor& batch_id_per_token,
+                                  const paddle::Tensor& block_tables,
+                                  const paddle::Tensor& position_ids,
+                                  const paddle::Tensor& slot_mapping,
+                                  const int block_size);
 
 std::vector<paddle::Tensor> DecodeMLAWriteCacheKernel(
     const paddle::Tensor& kv_nope,
@@ -1653,6 +1661,9 @@ PYBIND11_MODULE(fastdeploy_ops, m) {
 #endif
 
   m.def("get_position_ids", &GetPositionIds, "get_position_ids function");
+  m.def("get_position_ids_and_slot_mapping",
+        &GetPositionIdsAndSlotMapping,
+        "get_position_ids_and_slot_mapping function");
 
   /**
    * cutlass_scaled_mm.cu

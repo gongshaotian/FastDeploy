@@ -181,6 +181,7 @@ class RoutingCacheManager:
         self.routing_dtype = routing_replay_config.routing_dtype
         self.only_last_turn = routing_replay_config.only_last_turn
         self.use_fused_put = routing_replay_config.use_fused_put
+        self.debug_mode = routing_replay_config.debug_mode
         self.block_size = fd_config.cache_config.block_size
         self.return_mode = (
             routing_replay_config.routing_store_type
@@ -235,7 +236,41 @@ class RoutingCacheManager:
         block_indices = positions // self.block_size
         offsets = positions % self.block_size
         slot_mapping = np.array(block_ids)[block_indices] * self.block_size + offsets
-        return self.host_view.gather(slot_mapping)
+        routing_data = self.host_view.gather(slot_mapping)
+
+        if self.debug_mode:
+            expected_routing = np.arange(seq_len, dtype=routing_data.dtype)[:, None, None]
+            expected_routing = np.broadcast_to(expected_routing, (seq_len, self.num_moe_layers, self.moe_top_k))
+            if not np.array_equal(routing_data, expected_routing):
+                # Find all mismatched tokens
+                mismatch_mask = (routing_data != expected_routing).any(axis=(1, 2))
+                mismatched_token_indices = np.where(mismatch_mask)[0]
+                # Check for duplicate slots in gather
+                unique_slots, counts = np.unique(slot_mapping, return_counts=True)
+                num_duplicates = np.sum(counts > 1)
+                dup_info = ""
+                if num_duplicates > 0:
+                    dup_indices = np.where(counts > 1)[0]
+                    dup_slots = unique_slots[dup_indices]
+                    dup_info = f", duplicate_slots={list(dup_slots)}"
+                logger.error(
+                    f"[R3 Debug] Gather mismatch! seq_len={seq_len}, mismatched_tokens={len(mismatched_token_indices)}, "
+                    f"slots=[{slot_mapping[0]}...{slot_mapping[-1]}]{dup_info}"
+                )
+                logger.error(f"Mismatched token indices: {mismatched_token_indices}")
+                for idx in mismatched_token_indices:  # Print all mismatches tokens
+                    logger.error(
+                        f"  position={idx}, slot={slot_mapping[idx]}, "
+                        f"expected={expected_routing[idx, 0, 0]}, actual={routing_data[idx, 0, 0]}"
+                    )
+                raise ValueError("[R3 Debug]Routing gather validation failed.")
+            else:
+                logger.debug(
+                    f"[R3 Debug] Gather validation passed: seq_len={seq_len}, "
+                    f"slots=[{slot_mapping[0]}...{slot_mapping[-1]}]"
+                )
+
+        return routing_data
 
     def on_request_finished(self, request_id: str, block_table, seq_len: int) -> Optional[np.ndarray]:
         """
