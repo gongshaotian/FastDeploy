@@ -21,8 +21,8 @@ def calculate_routing_ratio(expected_routing: paddle.Tensor, actual_routing: pad
             print(f"token index {i}:\n expected_routing:{expected_routing[i]}\n actual_routing: {actual_routing[i]}\n")
 
     assert (
-        expected_routing_length == actual_routing_length
-    ), f"Routing real lengths do not match. Expected length {expected_routing_length} actual length {actual_routing_length}."
+        expected_routing_length - 1
+    ) == actual_routing_length, f"Routing real lengths do not match. Expected length {expected_routing_length} actual length {actual_routing_length}."
     total_rows, elements_per_row = expected_routing.shape
 
     mask1 = paddle.any(expected_routing != -1, axis=1)

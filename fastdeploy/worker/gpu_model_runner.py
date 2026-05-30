@@ -45,6 +45,12 @@ from fastdeploy.model_executor.layers.attention.append_attn_backend import (
 from fastdeploy.model_executor.layers.attention.base_attention_backend import (
     AttentionBackend,
 )
+from fastdeploy.model_executor.layers.attention.dsa_attention_backend import (
+    DSAAttentionBackend,
+)
+from fastdeploy.model_executor.layers.attention.mla_attention_backend import (
+    MLAAttentionBackend,
+)
 from fastdeploy.model_executor.layers.moe.routing_indices_cache import (
     RoutingReplayManager,
 )
@@ -1315,7 +1321,11 @@ class GPUModelRunner(ModelRunnerBase):
         applicable to all models that need per-token KV cache physical slot addresses.
         Results are stored in self.forward_meta.
         """
-        if self.routing_replay_manager is None:
+        # NOTE(zhushengguang): Only support MLAAttentionBackend and DSAAttentionBackend currently.
+        # Also needed when R3 (Routing Replay) is enabled for slot_mapping_buffer computation.
+        needs_slot_mapping = isinstance(self.attn_backends[0], (MLAAttentionBackend, DSAAttentionBackend))
+        needs_slot_mapping = (self.routing_replay_manager is not None) or needs_slot_mapping
+        if not needs_slot_mapping:
             return
         # Directly write to existing buffers (no memory allocation or copy needed)
         position_ids_buffer = self.share_inputs["position_ids_buffer"][:total_token_num]
