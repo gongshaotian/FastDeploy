@@ -1345,7 +1345,7 @@ class GPUModelRunner(ModelRunnerBase):
         self.forward_meta.slot_mapping = slot_mapping_buffer
 
         # Debug: print all tokens' position_ids and slot_mapping in R3 debug mode
-        if self.routing_replay_manager.debug_mode:
+        if self.routing_replay_manager is not None and self.routing_replay_manager.debug_mode:
             logger.info(f"[R3 Debug] token mapping: num_tokens={total_token_num}")
             logger.info("  token | position_id | slot ")
             logger.info("  " + "-" * 30)
