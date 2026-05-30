@@ -2341,8 +2341,6 @@ class GPUModelRunner(ModelRunnerBase):
         real_bsz = (seq_lens_this_time_cpu_numpy > 0).sum().item()
         if self.routing_replay_manager is not None:
             self.routing_replay_manager.token_num_overlap = seq_lens_this_time_cpu_numpy.sum().item()
-        # # # Compute position_ids and slot_mapping
-        # self._compute_position_ids_and_slot_mapping(total_token_num=self.share_inputs["seq_lens_this_time_cpu"].numpy().sum().item())
         if real_bsz > 0 and model_output is not None:
             model_output_data, sampler_output, post_process_event = self._postprocess(
                 model_output, p_done_idxs, model_forward_batch, num_running_requests, real_bsz
@@ -2389,7 +2387,6 @@ class GPUModelRunner(ModelRunnerBase):
         # Prepare inputs of model and sampler.
         current_launch_token_num, token_num_event = self._prepare_inputs(cached_token_num, cached_real_bsz)
         self.current_launch_token_num = current_launch_token_num
-        logger.info(f"current_launch_token_num {current_launch_token_num}")
 
         # NOTE(sunxin):
         # If current_launch_token_num is 0, it means the current worker is in an idle state,
