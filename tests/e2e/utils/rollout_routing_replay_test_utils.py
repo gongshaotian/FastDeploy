@@ -21,8 +21,8 @@ def calculate_routing_ratio(expected_routing: paddle.Tensor, actual_routing: pad
             print(f"token index {i}:\n expected_routing:{expected_routing[i]}\n actual_routing: {actual_routing[i]}\n")
 
     assert (
-        expected_routing_length == actual_routing_length
-    ), f"Routing real lengths do not match. Expected length {expected_routing_length} actual length {actual_routing_length}."
+        expected_routing_length
+    ) == actual_routing_length, f"Routing real lengths do not match. Expected length {expected_routing_length} actual length {actual_routing_length}."
     total_rows, elements_per_row = expected_routing.shape
 
     mask1 = paddle.any(expected_routing != -1, axis=1)
@@ -156,9 +156,9 @@ def check_routing_replay_chat_completion(openai_client, moe_layer_num: int, mode
     cur_save_routing_path = f"./R3_tmp/routing_replay_output_{model_name}/"
     model_path = os.getenv("MODEL_PATH")
     if model_path:
-        baseline_path = os.path.join(model_path, f"R3_BaseLine_uint8_0424/routing_replay_output_baseline_{model_name}")
+        baseline_path = os.path.join(model_path, f"R3_BaseLine_uint8_0530/routing_replay_output_baseline_{model_name}")
     else:
-        baseline_path = f"./R3_BaseLine_uint8_0424/routing_replay_output_baseline_{model_name}"
+        baseline_path = f"./R3_BaseLine_uint8_0530/routing_replay_output_baseline_{model_name}"
     stream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_stream")
 
     nonstream_baseline_path = os.path.join(baseline_path, "r3_chat_completion_nonstream")

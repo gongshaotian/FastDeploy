@@ -1855,6 +1855,9 @@ class RoutingReplayConfig:
         # Fused routing of all layers
         self.use_fused_put: bool = False
 
+        # Debug mode: hack topk_ids to use position_ids for validation
+        self.debug_mode: bool = False
+
         # Auto-filled by FDConfig from ModelConfig (do not set manually)
         self.routing_dtype: str = ""  # "uint8" / "uint16" / "uint32"
         self.num_moe_layers: int = 0
@@ -1885,6 +1888,8 @@ class RoutingReplayConfig:
             self.routing_dtype = "uint32"
         else:
             raise ValueError(f"num_experts {num_experts} exceeds uint32 range")
+        if self.debug_mode:
+            self.routing_dtype = "int64"
 
     def to_json_string(self):
         """

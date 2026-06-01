@@ -754,6 +754,8 @@ class FusedMoE(nn.Layer):
                     ep_size=self.fd_config.parallel_config.expert_parallel_size,
                     tp_group=self.fd_config.parallel_config.tp_group,
                     total_token_num=forward_meta.batch_id_per_token.shape[0],
+                    position_ids=forward_meta.position_ids,
+                    debug_mode=self.fd_config.routing_replay_config.debug_mode,
                 )
         if current_platform.is_intel_hpu():
             out = self.forward_normal(

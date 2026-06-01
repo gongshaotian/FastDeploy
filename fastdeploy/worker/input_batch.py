@@ -190,7 +190,7 @@ class InputBatch:
         self.cu_seqlens_k = paddle.full([max_num_seqs + 1], 0, dtype="int32")
 
         # Initialize addressing buffers
-        self.position_ids_buffer = paddle.zeros([self.max_chunk_tokens], dtype=paddle.int32)
+        self.position_ids_buffer = paddle.zeros([self.max_chunk_tokens], dtype=paddle.int64)
         self.slot_mapping_buffer = paddle.zeros([self.max_chunk_tokens], dtype=paddle.int64)
 
         # Declare AttentionBackend buffers

@@ -1085,7 +1085,7 @@ class DeepSeekV3Model(nn.Layer):
                 forward_meta,
                 hidden_states,
                 residual,
-                position_ids,
+                position_ids.cast(paddle.int32),
             )
         out = self.norm(hidden_states, residual, forward_meta=forward_meta)[0]
 
